@@ -1,0 +1,73 @@
+[project]
+name = "ai-factory-remastered"
+version = "0.1.0"
+description = "Local suite for training small-scale LLMs"
+authors = [
+    {name = "far_cds",email = "sacofrerichs@gmail.com"}
+]
+license = {text = "MIT License"}
+readme = "README.md"
+requires-python = ">=3.13.3"
+dependencies = [
+    # Core ML deps (torch, transformers, datasets, peft, trl, bitsandbytes) are
+    # provided by the conda `ai-factory` environment. Pure-Python runtime deps
+    # not pulled in transitively are listed here so env recreation stays correct.
+    # einops is required by Qwen3.5 `trust_remote_code` modeling code.
+    "einops",
+]
+
+[project.optional-dependencies]
+dev = [
+    "ruff",
+    "mypy",
+    "pytest",
+    "bandit",
+    "pre-commit",
+]
+
+
+[build-system]
+requires = ["poetry-core>=2.0.0,<3.0.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+target-version = "py313"
+line-length = 88
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "N",    # pep8-naming
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "S",    # flake8-bandit
+    "C4",   # flake8-comprehensions
+    "RUF",  # ruff-specific rules
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "E402", "S105", "S108"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+markers = [
+    "unit: fast unit tests",
+    "integration: integration tests",
+    "slow: slow tests (may require network or GPU)",
+]
+
+[tool.bandit]
+exclude_dirs = ["tests"]

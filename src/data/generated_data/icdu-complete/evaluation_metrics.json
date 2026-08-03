@@ -1,0 +1,12 @@
+{
+    "prompts_diversity": {
+        "unique_ratio": 0.059969718912513986,
+        "avg_jaccard_similarity": 0.1674977226777453,
+        "is_diverse": true
+    },
+    "responses_diversity": {
+        "unique_ratio": 0.925218879599763,
+        "avg_jaccard_similarity": 0.12268928110442967,
+        "is_diverse": true
+    }
+}

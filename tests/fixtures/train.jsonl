@@ -1,0 +1,2 @@
+{"application_prompt": "Help me pick a watch.", "ideal_response_final": "Consider size and features.", "persona_archetype": "Carla", "capability_layer": "Foundational", "context_summary": "A busy professional wants a dive watch for her 30th birthday.", "user_intent": "Product recommendation"}
+{"application_prompt": "Suggest a gift.", "ideal_response_final": "Ask about preferences.", "persona_archetype": "Ben", "capability_layer": "Transformational", "context_summary": "Looking for an anniversary gift.", "user_intent": "Gift ideas"}

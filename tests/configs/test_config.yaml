@@ -1,0 +1,47 @@
+data:
+  train_file: ../fixtures/train.jsonl
+  validation_file: ../fixtures/validation.jsonl
+model:
+  name: mistralai/Mistral-7B-Instruct-v0.3
+  max_length: 256
+  attn_implementation: sdpa
+  trust_remote_code: true
+  use_linear_attention_kernels: false
+quantization:
+  enabled: false
+  quant_type: nf4
+  use_double_quant: true
+lora:
+  r: 8
+  alpha: 16
+  dropout: 0.05
+  target_modules:
+    - q_proj
+    - v_proj
+training:
+  output_dir: ../fixtures/output
+  seed: 123
+  num_train_epochs: 1
+  per_device_train_batch_size: 1
+  per_device_eval_batch_size: 1
+  gradient_accumulation_steps: 1
+  optim: adamw_torch
+  learning_rate: 0.0002
+  weight_decay: 0.0
+  max_grad_norm: 1.0
+  warmup_ratio: 0.0
+  lr_scheduler_type: constant
+  evaluation_strategy: steps
+  eval_steps: 10
+  save_strategy: steps
+  save_steps: 10
+  save_total_limit: 1
+  logging_steps: 5
+  group_by_length: false
+  gradient_checkpointing: false
+  report_to: none
+  load_best_model_at_end: false
+  metric_for_best_model: eval_loss
+  greater_is_better: false
+  remove_unused_columns: true
+  dataloader_num_workers: 0

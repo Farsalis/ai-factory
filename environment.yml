@@ -1,0 +1,87 @@
+# ai-factory environment for CUDA 12.4
+# Compatible with Miniconda/Anaconda (conda 25.x, 26.x+)
+#
+# Create environment (use one of these; --file works when -f does not):
+#   conda env create
+#   conda env create --file environment.yml
+#   conda env create environment.yml
+#
+# Comprehensive package list derived from codebase analysis:
+#
+# SOURCE IMPORTS:
+#   src/main.py:           torch, typer, yaml
+#   src/dpo.py:            torch, datasets, peft, transformers, trl
+#   src/train.py:         torch, peft, transformers, trl
+#   src/model_setup.py:    transformers (BitsAndBytesConfig, AutoModel*, etc.)
+#   src/inference_with_tools.py: torch, requests, transformers
+#   src/tools.py:          transformers (Pipeline)
+#   src/config.py:         pydantic
+#   src/data/__init__.py:  torch, datasets, transformers
+#   src/data/augment*.py:  transformers (AutoTokenizer)
+#   src/data/master_generate_icdu.py: matplotlib, sklearn, tqdm, transformers
+#   src/data/generate_icdu_*.py: matplotlib, sklearn, tqdm
+#   src/model_optimizer.py: yaml
+#   src/hardware.py:       torch
+#   src/utils.py:          torch
+#   src/upload/upload_to_hf.py: huggingface_hub
+#
+# TESTS: pytest, pytest-mock
+#
+# NOTE: bitsandbytes is pip-only (conda-forge builds linux-64 only).
+#       On Windows, use: pip install bitsandbytes --prefer-binary
+
+name: ai-factory
+
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+  - defaults
+
+dependencies:
+  # --- Core interpreter ---
+  - python=3.12
+  - pip
+
+  # --- PyTorch stack (CUDA 12.4) ---
+  # Must install from same source; mismatch causes "operator torchvision::nms does not exist"
+  - pytorch=2.5.1
+  - torchvision=0.20.1
+  - torchaudio=2.5.1
+  - pytorch-cuda=12.4
+
+  # --- Hugging Face ecosystem (conda-forge) ---
+  - transformers>=5.1.0,<6
+  - datasets>=4.5.0
+  - accelerate>=1.12.0
+  - peft>=0.18.0
+  - trl>=0.27.0
+  - huggingface_hub>=1.4.0
+  - safetensors>=0.7.0
+
+  # --- Data & scientific (conda-forge) ---
+  - numpy
+  - scipy
+  - scikit-learn
+  - matplotlib
+  - pandas
+
+  # --- Config & CLI ---
+  - pyyaml
+  - pydantic>=2.0
+  - typer
+
+  # --- HTTP & utilities ---
+  - requests
+  - tqdm
+
+  # --- Dev & testing ---
+  - pytest
+  - pytest-mock
+  - ruff
+  - mypy
+  - bandit
+
+  # --- Pip-only (conda-forge bitsandbytes is linux-64 only) ---
+  - pip:
+      - bitsandbytes>=0.49.0

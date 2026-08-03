@@ -1,0 +1,101 @@
+# ==============================================================================
+# Enhanced QLoRA and DPO Fine-Tuning Configuration
+# - Optimized for RTX 4070 (8GB VRAM, 32GB RAM) to prevent crashes.
+# - Supports ICDU-formatted datasets for the '3-3-3 Strategy' pipeline.
+# ==============================================================================
+
+# --- Data Configuration ---
+# Point to ICDU-formatted JSONL files for training and validation.
+# Format: JSON Lines (.jsonl), with each line containing ICDU fields (e.g., application_prompt, ideal_response_final).
+data:
+  train_file: "./data/datasets/icdu_training_data_v8.jsonl"
+  validation_file: "./data/datasets/icdu_validation_data_v8.jsonl"
+
+# --- Model Configuration ---
+# Defines the base model and its core parameters.
+model:
+  name: "Qwen/Qwen3.5-9B"  # dpo.py uses this to resolve model location, either HF identifier or relative path to dpo.py
+  # Increased max_length to handle verbose ICDU system prompts and contexts.
+  max_length: 4096
+  attn_implementation: "flash_attention_2"
+  trust_remote_code: true
+  use_linear_attention_kernels: false
+
+# --- Quantization Configuration ---
+# Settings for 4-bit QLoRA to minimize memory usage.
+quantization:
+  enabled: true
+  quant_type: "nf4"
+  use_double_quant: true
+
+# --- LoRA Configuration ---
+# Parameters for Low-Rank Adaptation (LoRA) fine-tuning.
+lora:
+  r: 32
+  alpha: 32
+  dropout: 0.05
+  target_modules:
+    - "q_proj"
+    - "k_proj"
+    - "v_proj"
+    - "o_proj"
+    - "gate_proj"
+    - "up_proj"
+    - "down_proj"
+
+# --- Training Configuration ---
+# Parameters for SFT training loop (via Hugging Face's TrainingArguments).
+training:
+  output_dir: "./training_output"
+  seed: 42
+  num_train_epochs: 1
+  per_device_train_batch_size: 4
+  per_device_eval_batch_size: 4
+  gradient_accumulation_steps: 2
+  optim: "paged_adamw_8bit"
+  learning_rate: 0.0002
+  weight_decay: 0.001
+  max_grad_norm: 0.3
+  warmup_ratio: 0.03
+  lr_scheduler_type: "cosine"
+  evaluation_strategy: "steps"
+  eval_steps: 150
+  save_strategy: "steps"
+  save_steps: 300
+  save_total_limit: 2
+  save_only_model: false
+  logging_steps: 10
+  group_by_length: true
+  gradient_checkpointing: true
+  report_to: "none"
+  load_best_model_at_end: true
+  metric_for_best_model: "eval_loss"
+  greater_is_better: false
+  remove_unused_columns: true
+  dataloader_num_workers: 2
+
+# --- DPO Configuration ---
+# Parameters for Direct Preference Optimization (DPO) training.
+# DPO expects messages-format JSONL (chat with tool calls). Use train_file when SFT
+# uses ICDU data (data.train_file) so DPO can use a separate augmented chat file.
+dpo:
+  train_file: "./data/datasets/augmented_datasets/breaking_better/bb_training_data_v7.jsonl"  # optional; fallback: data.train_file
+  output_dir: "./training_output"
+  learning_rate: 0.000005
+  beta: 0.1
+  max_steps: 100
+  lora_rank: 32
+  per_device_train_batch_size: 2
+  per_device_eval_batch_size: 2
+  gradient_accumulation_steps: 2
+  optim: "paged_adamw_8bit"
+  lr_scheduler_type: "cosine"
+  eval_steps: 50
+  save_steps: 50
+  save_total_limit: 2
+  logging_steps: 10
+  gradient_checkpointing: true
+  warmup_ratio: 0.03
+  torch_compile: false  # Requires Triton (Linux-only); set true on Linux for ~10-30% speedup
+
+# torch_compile: Triton not available on Windows; enable on Linux for faster DPO training.
