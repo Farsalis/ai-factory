@@ -7,13 +7,14 @@ merging adapters with base models, and orchestrating the complete training pipel
 import inspect
 import logging
 from dataclasses import fields as dataclass_fields
+from pathlib import Path
 from typing import Any
 
 import torch
 from peft import LoraConfig as PeftLoraConfig
 from peft import PeftModel
 from transformers import (
-    AutoModelForCausalLM,
+    AutoProcessor,
     EarlyStoppingCallback,
     PreTrainedModel,
     PreTrainedTokenizer,
@@ -26,6 +27,7 @@ from src.data import VectorizedCompletionOnlyCollator, load_and_prepare_dataset
 from src.model_setup import (
     load_model,
     load_tokenizer,
+    resolve_model_class,
     validate_linear_attention_kernels,
 )
 from src.utils import Environment
@@ -346,8 +348,46 @@ def run_training(
     trainer.save_model(str(adapter_save_path))
 
 
+def _save_processor(model_name: str, save_path: Path, trust_remote_code: bool) -> None:
+    """Save the base model's processor next to a merged checkpoint, if it has one.
+
+    A preserved vision tower is only usable when the image/video preprocessor
+    configuration travels with the weights, and the tokenizer alone does not
+    carry it. Text-only checkpoints have no processor; that is not an error.
+
+    :args:
+        model_name: Hub identifier or local path of the base model.
+        save_path: Directory the merged model was written to.
+        trust_remote_code: Whether remote processor code may be executed.
+    """
+    try:
+        processor = AutoProcessor.from_pretrained(  # type: ignore[no-untyped-call]
+            model_name,
+            trust_remote_code=trust_remote_code,
+        )
+    except Exception as exc:
+        logger.info(
+            "No processor saved for %s (%s: %s). This is expected for "
+            "text-only checkpoints.",
+            model_name,
+            type(exc).__name__,
+            exc,
+        )
+        return
+
+    try:
+        processor.save_pretrained(str(save_path))
+        logger.info("Saved processor alongside the merged model.")
+    except Exception as exc:
+        logger.warning("Failed to save processor: %s", exc)
+
+
 def merge_and_save_model(config: ScriptConfig, env: Environment) -> None:
     """Load base model, merge adapter, and save standalone model.
+
+    The base model is reloaded through its declared architecture so that every
+    checkpoint tensor — including a multimodal vision tower — is present in the
+    merged artifact rather than being dropped on the way out.
 
     Args:
         config: Script configuration.
@@ -371,8 +411,14 @@ def merge_and_save_model(config: ScriptConfig, env: Environment) -> None:
 
     validate_linear_attention_kernels(config.model.use_linear_attention_kernels)
 
+    model_class = resolve_model_class(
+        config.model.name,
+        trust_remote_code=config.model.trust_remote_code,
+        preserve_all_tensors=config.model.preserve_all_tensors,
+    )
+
     try:
-        high_precision_model = AutoModelForCausalLM.from_pretrained(
+        high_precision_model = model_class.from_pretrained(
             config.model.name,
             trust_remote_code=config.model.trust_remote_code,
             torch_dtype=env.compute_dtype,
@@ -414,6 +460,13 @@ def merge_and_save_model(config: ScriptConfig, env: Environment) -> None:
     except Exception as e:
         logger.error(f"Failed to save tokenizer: {e}")
         raise RuntimeError(f"Tokenizer saving error: {e}") from e
+
+    if config.model.preserve_all_tensors:
+        _save_processor(
+            config.model.name,
+            merged_save_path,
+            config.model.trust_remote_code,
+        )
 
     logger.info("Merged model and tokenizer saved successfully.")
 

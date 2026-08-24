@@ -88,7 +88,7 @@ ai-factory/
 | -------------------- | --------- | ------------------------------------------------------------------------------------------ |
 | `ScriptConfig`       | BaseModel | Root configuration model; composes all sub-configs into a single validated object          |
 | `DataConfig`         | BaseModel | Data file paths for training and validation (JSON/JSONL format)                            |
-| `ModelConfig`        | BaseModel | HF model id, sequence length, attention backend, `use_linear_attention_kernels`            |
+| `ModelConfig`        | BaseModel | HF model id, sequence length, attention backend, `use_linear_attention_kernels`, `preserve_all_tensors` |
 | `QuantizationConfig` | BaseModel | BitsAndBytes 4-bit quantization settings (NF4/FP4)                                         |
 | `LoraConfigModel`    | BaseModel | LoRA adapter parameters (rank, alpha, dropout, target modules)                             |
 | `TrainingConfig`     | BaseModel | Complete Hugging Face TrainingArguments mapping (optimizer, LR, scheduling, checkpointing) |
@@ -149,7 +149,8 @@ ScriptConfig(**dict)
     │   ├─ attn_implementation: Literal["eager", "flash_attention_2", "sdpa"] | None
     │   │   (schema; load_model runtime also accepts flash_attention_3)
     │   ├─ trust_remote_code: bool (default: True)
-    │   └─ use_linear_attention_kernels: bool (default: False; Qwen3.5 Gated DeltaNet)
+    │   ├─ use_linear_attention_kernels: bool (default: False; Qwen3.5 Gated DeltaNet)
+    │   └─ preserve_all_tensors: bool (default: True; load the declared architecture)
     │
     ├─ quantization: QuantizationConfig
     │   ├─ enabled: bool (default: True)
@@ -265,7 +266,7 @@ config object passed to all pipeline phases
     │   └─ config.training → TrainingArguments()
     │
     ├─► train.py: merge_and_save_model(config, env)
-    │   └─ config.model → AutoModelForCausalLM.from_pretrained()
+    │   └─ config.model → resolve_model_class() → from_pretrained()
     │
     ├─► main.py: DPO phase
     │   ├─ config.dpo (or get_default_dpo_config())
@@ -383,6 +384,7 @@ model_config = ConfigDict(
 *   **`attn_implementation`:** Pydantic allows `eager` | `flash_attention_2` | `sdpa` | `None`. Runtime `load_model` also understands `flash_attention_3`. Prefer YAML values that validate.
 *   **Gemma 4:** Prefer `attn_implementation: sdpa`. The loader’s head-dim guard reads `head_dim` (or `hidden_size // num_attention_heads`), not `global_head_dim` (often 512 on Gemma 4 global layers; FA2 max is 256).
 *   **`use_linear_attention_kernels`:** When `true`, `validate_linear_attention_kernels` fail-fasts unless `causal_conv1d` and `fla` (flash-linear-attention) import. Used by SFT load, merge, DPO, and inference. Sample `src/config.yaml` sets this `false`.
+*   **`preserve_all_tensors`:** When `true` (default), SFT load, merge, and DPO go through `resolve_model_class` and load the architecture the checkpoint declares, so a multimodal base keeps its vision tower instead of being silently reduced to its text submodel. Set `false` only to deliberately export a text-only model. See [model_setup](model_setup__documentation.md#configuration-and-conventions).
 
 ### YAML Structure
 
@@ -400,6 +402,7 @@ model:
   attn_implementation: flash_attention_2
   trust_remote_code: true
   use_linear_attention_kernels: false
+  preserve_all_tensors: true
 
 quantization:
   enabled: true
@@ -575,6 +578,7 @@ class ModelConfig {
   +attn_implementation
   +trust_remote_code
   +use_linear_attention_kernels
+  +preserve_all_tensors
 }
 
 class QuantizationConfig {
@@ -737,4 +741,4 @@ With save_total_limit=2:
 
 ***
 
-*Last updated: 2026-08-02.*
+*Last updated: 2026-08-23.*

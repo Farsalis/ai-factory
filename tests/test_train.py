@@ -510,13 +510,15 @@ def test_run_training_failure(
 
 
 @pytest.mark.unit
+@patch("src.train.AutoProcessor")
 @patch("src.train.load_tokenizer")
-@patch("src.train.AutoModelForCausalLM")
+@patch("src.train.resolve_model_class")
 @patch("src.train.PeftModel")
 def test_merge_and_save_model_success(
     mock_peft_model: MagicMock,
-    mock_auto_model: MagicMock,
+    mock_resolve_model_class: MagicMock,
     mock_load_tokenizer: MagicMock,
+    mock_auto_processor: MagicMock,
     sample_config: ScriptConfig,
     mock_env_cuda: Environment,
     tmp_path: Path,
@@ -527,6 +529,7 @@ def test_merge_and_save_model_success(
     adapter_path.mkdir(parents=True, exist_ok=True)
 
     # Setup mocks
+    mock_auto_model = mock_resolve_model_class.return_value
     mock_base_model = MagicMock()
     mock_auto_model.from_pretrained.return_value = mock_base_model
 
@@ -547,6 +550,12 @@ def test_merge_and_save_model_success(
     mock_peft_model_instance.merge_and_unload.assert_called_once()
     mock_merged_model.save_pretrained.assert_called_once()
     mock_tokenizer.save_pretrained.assert_called_once()
+    # The base model is reloaded through its declared architecture, and the
+    # processor travels with the merged weights so a preserved vision tower
+    # stays usable.
+    mock_resolve_model_class.assert_called_once()
+    assert mock_resolve_model_class.call_args.kwargs["preserve_all_tensors"] is True
+    mock_auto_processor.from_pretrained.return_value.save_pretrained.assert_called_once()
 
 
 @pytest.mark.unit
@@ -564,9 +573,9 @@ def test_merge_and_save_model_adapter_not_found(
 
 
 @pytest.mark.unit
-@patch("src.train.AutoModelForCausalLM")
+@patch("src.train.resolve_model_class")
 def test_merge_and_save_model_load_failure(
-    mock_auto_model: MagicMock,
+    mock_resolve_model_class: MagicMock,
     sample_config: ScriptConfig,
     mock_env_cuda: Environment,
     tmp_path: Path,
@@ -575,6 +584,7 @@ def test_merge_and_save_model_load_failure(
     adapter_path = sample_config.training.output_dir / "final_adapter"
     adapter_path.mkdir(parents=True, exist_ok=True)
 
+    mock_auto_model = mock_resolve_model_class.return_value
     mock_auto_model.from_pretrained.side_effect = RuntimeError("Load failed")
 
     with pytest.raises(RuntimeError, match="Model loading error"):
@@ -583,11 +593,11 @@ def test_merge_and_save_model_load_failure(
 
 @pytest.mark.unit
 @patch("src.train.load_tokenizer")
-@patch("src.train.AutoModelForCausalLM")
+@patch("src.train.resolve_model_class")
 @patch("src.train.PeftModel")
 def test_merge_and_save_model_merge_failure(
     mock_peft_model: MagicMock,
-    mock_auto_model: MagicMock,
+    mock_resolve_model_class: MagicMock,
     mock_load_tokenizer: MagicMock,
     sample_config: ScriptConfig,
     mock_env_cuda: Environment,
@@ -598,7 +608,7 @@ def test_merge_and_save_model_merge_failure(
     adapter_path.mkdir(parents=True, exist_ok=True)
 
     mock_base_model = MagicMock()
-    mock_auto_model.from_pretrained.return_value = mock_base_model
+    mock_resolve_model_class.return_value.from_pretrained.return_value = mock_base_model
 
     mock_peft_model_instance = MagicMock()
     mock_peft_model_instance.merge_and_unload.side_effect = RuntimeError("Merge failed")

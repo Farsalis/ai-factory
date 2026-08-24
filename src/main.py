@@ -377,6 +377,7 @@ def run_pipeline(
             warmup_ratio=dpo_config.warmup_ratio,
             torch_compile=torch_compile,
             use_linear_attention_kernels=config.model.use_linear_attention_kernels,
+            preserve_all_tensors=config.model.preserve_all_tensors,
         )
         logger.info("DPO phase completed successfully")
     except Exception as e:

@@ -90,6 +90,8 @@ class ModelConfig(BaseModel):
         attn_implementation: 'flash_attention_2' for supported hardware,
             'sdpa' for PyTorch 2.0+, 'eager' as fallback.
         trust_remote_code: Whether to trust remote code when loading the model.
+        preserve_all_tensors: Load the checkpoint's declared architecture so no
+            checkpoint tensors are silently discarded.
 
     Example:
         ```python
@@ -124,6 +126,16 @@ class ModelConfig(BaseModel):
     trust_remote_code: bool = Field(
         True,
         description="Whether to trust remote code when loading the model",
+    )
+    preserve_all_tensors: bool = Field(
+        True,
+        description=(
+            "Load the checkpoint's declared architecture (e.g. "
+            "Qwen3_5ForConditionalGeneration) instead of AutoModelForCausalLM, so "
+            "tensors outside the causal-LM submodel — vision towers on multimodal "
+            "checkpoints — are kept and written back out by the merge step. Set "
+            "false only to deliberately export a text-only model."
+        ),
     )
     use_linear_attention_kernels: bool = Field(
         False,

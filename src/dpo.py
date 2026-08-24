@@ -25,7 +25,6 @@ import torch
 from datasets import Dataset  # type: ignore[import-untyped]
 from peft import LoraConfig, prepare_model_for_kbit_training
 from transformers import (
-    AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
     PreTrainedTokenizer,
@@ -51,6 +50,7 @@ from trl import (  # noqa: E402  (must follow optional DPOConfig import above)
 )
 
 from src.model_setup import (  # noqa: E402  (must follow torch-dependent shim above)
+    resolve_model_class,
     validate_linear_attention_kernels,
 )
 
@@ -355,6 +355,7 @@ def run_dpo_training(
     warmup_ratio: float = 0.03,
     torch_compile: bool = False,
     use_linear_attention_kernels: bool = False,
+    preserve_all_tensors: bool = True,
 ) -> None:
     """Run DPO training on the preference dataset.
 
@@ -382,6 +383,8 @@ def run_dpo_training(
         warmup_ratio: Ratio of warmup steps to total steps.
         torch_compile: Whether to use torch.compile for faster training (PyTorch 2.0+).
         use_linear_attention_kernels: Require causal_conv1d + fla when True.
+        preserve_all_tensors: Load the checkpoint's declared architecture so no
+            tensors (e.g. a multimodal vision tower) are silently discarded.
 
     Raises:
         ValueError: If model_path is invalid or dataset is empty.
@@ -425,7 +428,12 @@ def run_dpo_training(
         device_map = "cuda:0" if torch.cuda.is_available() else "auto"
         # Load model with quantization
         logger.info("Loading model with 4-bit quantization...")
-        model = AutoModelForCausalLM.from_pretrained(
+        model_class = resolve_model_class(
+            model_path,
+            trust_remote_code=True,
+            preserve_all_tensors=preserve_all_tensors,
+        )
+        model = model_class.from_pretrained(
             model_path,
             quantization_config=bnb_config,
             device_map=device_map,

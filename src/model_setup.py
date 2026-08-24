@@ -5,11 +5,14 @@ models and tokenizers with support for:
 - 4-bit quantization via BitsAndBytes
 - Flash Attention 2/3 with automatic fallback
 - Environment-aware device and dtype selection
+- Full-checkpoint loading: the declared architecture is preferred over
+  AutoModelForCausalLM so no checkpoint tensors are silently discarded
 """
 
 import logging
 import typing
 
+import transformers
 from transformers import (
     AutoConfig,
     AutoModelForCausalLM,
@@ -23,6 +26,10 @@ from src.config import ModelConfig, QuantizationConfig
 from src.utils import Environment
 
 logger = logging.getLogger(__name__)
+
+# Either a concrete model class (e.g. Qwen3_5ForConditionalGeneration) or an
+# auto-class; both expose the `from_pretrained` constructor we call.
+ModelLoader = type[PreTrainedModel] | type[AutoModelForCausalLM]
 
 # Constants
 FLASH_ATTN_MODULE_NAME = "flash_attn"
@@ -310,6 +317,107 @@ def _resolve_attention_implementation(
     return requested_impl
 
 
+def _declared_architectures(model_name: str, trust_remote_code: bool) -> list[str]:
+    """Return the architecture class names a checkpoint declares in its config.
+
+    :args:
+        model_name: Hub identifier or local path of the checkpoint.
+        trust_remote_code: Whether remote modeling code may be executed.
+
+    :returns:
+        Declared architecture names, or an empty list when the config cannot be
+        read or declares none.
+    """
+    try:
+        hf_config = AutoConfig.from_pretrained(
+            model_name,
+            trust_remote_code=trust_remote_code,
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not read the config of '%s' to determine its architecture: %s",
+            model_name,
+            exc,
+        )
+        return []
+
+    return list(getattr(hf_config, "architectures", None) or [])
+
+
+def resolve_model_class(
+    model_name: str,
+    trust_remote_code: bool = False,
+    preserve_all_tensors: bool = True,
+) -> ModelLoader:
+    """Resolve the loader class that can hold every tensor in a checkpoint.
+
+    ``AutoModelForCausalLM`` maps a multimodal checkpoint onto its text-only
+    submodel: for Qwen3.5 it yields ``Qwen3_5ForCausalLM``, which declares
+    ``_keys_to_ignore_on_load_unexpected = ["^mtp.*", "^model.visual.*"]`` and so
+    discards the vision tower with no warning at all. Loading the architecture the
+    checkpoint itself declares keeps those tensors, which matters most at merge
+    time — whatever the merge step never loaded cannot be written back out.
+
+    Falls back to ``AutoModelForCausalLM`` when the declared architecture is
+    unavailable (custom code shipped with the repo) or is not generative, since
+    those cases cannot be loaded or trained through the declared class anyway.
+
+    :args:
+        model_name: Hub identifier or local path of the checkpoint.
+        trust_remote_code: Whether remote modeling code may be executed.
+        preserve_all_tensors: When False, always use AutoModelForCausalLM and
+            accept that non-text tensors are dropped.
+
+    :returns:
+        The class whose ``from_pretrained`` should load this checkpoint.
+    """
+    if not preserve_all_tensors:
+        logger.warning(
+            "preserve_all_tensors is disabled: loading '%s' via "
+            "AutoModelForCausalLM. Checkpoint tensors outside the causal-LM "
+            "submodel (e.g. vision towers) will be dropped and cannot be "
+            "recovered by the merge step.",
+            model_name,
+        )
+        return AutoModelForCausalLM
+
+    architectures = _declared_architectures(model_name, trust_remote_code)
+
+    for architecture in architectures:
+        candidate = getattr(transformers, architecture, None)
+        if not (isinstance(candidate, type) and issubclass(candidate, PreTrainedModel)):
+            continue
+        # can_generate() is a classmethod, so this needs no weights and avoids
+        # importing transformers.generation (and its sklearn/pandas chain) here.
+        if not candidate.can_generate():
+            logger.warning(
+                "Declared architecture '%s' of '%s' is not generative; it cannot "
+                "be fine-tuned as a causal LM. Falling back to "
+                "AutoModelForCausalLM.",
+                architecture,
+                model_name,
+            )
+            continue
+        logger.info(
+            "Loading '%s' as its declared architecture '%s' to preserve all "
+            "checkpoint tensors.",
+            model_name,
+            architecture,
+        )
+        return candidate
+
+    if architectures:
+        logger.warning(
+            "Declared architecture(s) %s of '%s' are not available in this "
+            "transformers installation. Falling back to AutoModelForCausalLM; "
+            "tensors outside the causal-LM submodel may be dropped.",
+            architectures,
+            model_name,
+        )
+
+    return AutoModelForCausalLM
+
+
 def load_model(
     model_config: ModelConfig,
     quant_config: QuantizationConfig,
@@ -318,6 +426,8 @@ def load_model(
     """Load the model with quantization, attention, and device configuration.
 
     Loads a Hugging Face causal language model with:
+    - The checkpoint's declared architecture, so all of its tensors are kept
+      (see resolve_model_class)
     - Optional 4-bit quantization via BitsAndBytes (if enabled and supported)
     - Flash Attention 2/3 with automatic fallback to SDPA
     - Environment-aware device mapping and compute dtype
@@ -341,6 +451,12 @@ def load_model(
         getattr(model_config, "use_linear_attention_kernels", False)
     )
 
+    model_class = resolve_model_class(
+        model_config.name,
+        trust_remote_code=model_config.trust_remote_code,
+        preserve_all_tensors=getattr(model_config, "preserve_all_tensors", True),
+    )
+
     # Configure quantization
     bnb_config = _create_bitsandbytes_config(quant_config, env)
 
@@ -356,7 +472,7 @@ def load_model(
     device_map = "cuda:0" if bnb_config and env.cuda_available else "auto"
 
     # Build model loading arguments
-    model_kwargs = {
+    model_kwargs: dict[str, typing.Any] = {
         "device_map": device_map,
         "trust_remote_code": model_config.trust_remote_code,
         "use_safetensors": True,
@@ -369,14 +485,15 @@ def load_model(
         model_kwargs["quantization_config"] = bnb_config
 
     logger.debug(
-        f"Model loading kwargs: device_map={device_map!r}, "
+        f"Model loading kwargs: loader={model_class.__name__}, "
+        f"device_map={device_map!r}, "
         f"dtype={env.compute_dtype}, "
         f"attn={effective_attn_impl}, "
         f"quantization={'enabled' if bnb_config else 'disabled'}"
     )
 
     try:
-        model = AutoModelForCausalLM.from_pretrained(model_config.name, **model_kwargs)
+        model = model_class.from_pretrained(model_config.name, **model_kwargs)
         logger.info(f"Successfully loaded model: {model_config.name}")
         return model
     except Exception as e:

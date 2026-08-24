@@ -572,6 +572,7 @@ model:
   max_length: 8192                              # Maximum sequence length
   attn_implementation: "flash_attention_2"      # "flash_attention_2", "sdpa", or "eager"
   trust_remote_code: true                        # Allow custom model code
+  preserve_all_tensors: true                     # Keep every base-model tensor
 ```
 
 **Attention Implementation**:
@@ -579,6 +580,26 @@ model:
 - `flash_attention_2`: Fastest, requires `flash-attn` package
 - `sdpa`: PyTorch 2.0+ scaled dot product attention (fallback)
 - `eager`: Standard attention (slowest, most compatible)
+
+**Preserve All Tensors** (default `true`):
+
+The pipeline loads the architecture the checkpoint declares in its `config.json`
+rather than `AutoModelForCausalLM`. This matters for natively multimodal
+checkpoints — Qwen3.5 among them: `AutoModelForCausalLM` maps them onto their
+text-only submodel (`Qwen3_5ForCausalLM`), which lists `^model.visual.*` in
+`_keys_to_ignore_on_load_unexpected` and therefore discards the vision tower
+without printing a warning. Since the merge step can only write out what it
+loaded, the exported model would silently lose those weights.
+
+With `preserve_all_tensors: true`, the vision tower is loaded, carried through
+the merge, and written to `final_merged_model` alongside the base model's
+processor. LoRA is unaffected: the configured `target_modules` (`q_proj`, …) do
+not match the vision tower's module names (`qkv`, `proj`, `linear_fc1/2`), so the
+same text-stack modules are trained as before.
+
+Set it to `false` only to deliberately export a text-only model. Note that
+Qwen3.5's multi-token-prediction head (`mtp.*`, ~0.24B parameters) is dropped
+either way — transformers implements no class that holds it.
 
 #### Quantization Configuration
 

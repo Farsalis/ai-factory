@@ -67,10 +67,17 @@ trainer.train() → save final_adapter/
 ```
 require final_adapter/
 validate_linear_attention_kernels(config.model.use_linear_attention_kernels)
-AutoModelForCausalLM.from_pretrained(base, device_map="cpu", ...)  # no attn_implementation kwarg
+resolve_model_class(...) → declared architecture (keeps every checkpoint tensor)
+<resolved class>.from_pretrained(base, device_map="cpu", ...)  # no attn_implementation kwarg
 PeftModel.from_pretrained → merge_and_unload → final_merged_model/
 load_tokenizer → save alongside
+if preserve_all_tensors: _save_processor → save alongside (no-op for text-only bases)
 ```
+
+The merge can only write out what it loaded, so this is where `preserve_all_tensors`
+matters most: loading via `AutoModelForCausalLM` would silently strip a multimodal
+base's vision tower from the exported model. See
+[model_setup](model_setup__documentation.md#configuration-and-conventions).
 
 ### train.run_pipeline vs main.run_pipeline
 
@@ -133,4 +140,4 @@ Effective batch = `per_device_train_batch_size × gradient_accumulation_steps ×
 
 ***
 
-*Last updated: 2026-08-02.*
+*Last updated: 2026-08-23.*

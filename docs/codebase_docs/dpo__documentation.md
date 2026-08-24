@@ -24,7 +24,7 @@ ai-factory/
 │   ├── train.py              # SFT/merge (upstream artifacts)
 │   ├── config.py             # DPOConfig via main
 │   ├── data/                 # ICDU for SFT (not used directly by dpo)
-│   ├── model_setup.py        # validate_linear_attention_kernels
+│   ├── model_setup.py        # validate_linear_attention_kernels, resolve_model_class
 │   └── main.py               # Phase 3 orchestration
 ├── tests/
 │   └── test_dpo.py
@@ -71,7 +71,8 @@ For each example with messages:
 ```
 validate_linear_attention_kernels(flag)
 BitsAndBytesConfig NF4 + float16 compute (hardcoded)
-AutoModelForCausalLM.from_pretrained(...)  # NO attn_implementation kwarg
+resolve_model_class(model_path, preserve_all_tensors=...)  # declared architecture
+<resolved class>.from_pretrained(...)  # NO attn_implementation kwarg
 prepare_model_for_kbit_training
 LoraConfig(r=lora_rank, target_modules=["q_proj","v_proj"])
 DPOConfig / TrainingArguments + DPOTrainer (TRL API versioning)
@@ -109,6 +110,7 @@ Upstream from main: prefer `final_merged_model` as base; else `config.model.name
 | `peft` | LoRA + kbit prep |
 | `transformers` | Direct model/tokenizer load |
 | `src.model_setup.validate_linear_attention_kernels` | Optional fail-fast |
+| `src.model_setup.resolve_model_class` | Load the declared architecture; keeps all base tensors |
 
 **Attention caveat:** Unlike SFT `load_model`, DPO does not pass `attn_implementation` or run FA2 head-dim fallback. FA2-incompatible models (e.g. Gemma 4 global heads) need care outside this path.
 
@@ -150,4 +152,4 @@ L_DPO = -E[log σ(β (log πθ(yw|x)/πref(yw|x) - log πθ(yl|x)/πref(yl|x)))]
 
 ***
 
-*Last updated: 2026-08-02.*
+*Last updated: 2026-08-23.*

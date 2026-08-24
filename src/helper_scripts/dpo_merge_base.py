@@ -15,7 +15,8 @@ from pathlib import Path
 
 import typer
 from peft import PeftModel
-from transformers import AutoModelForCausalLM
+
+from src.model_setup import resolve_model_class
 
 app = typer.Typer(add_completion=False)
 
@@ -31,15 +32,27 @@ def main(
     output: Path = typer.Option(  # noqa: B008
         ..., file_okay=False, help="Where to write the merged model."
     ),
+    preserve_all_tensors: bool = typer.Option(
+        True,
+        help=(
+            "Load the base model's declared architecture so all of its tensors "
+            "(e.g. a multimodal vision tower) survive into the merged output."
+        ),
+    ),
 ) -> None:
     """Merge ``adapter`` into ``base`` and save the result to ``output``.
 
     :args:
-        base: Path to the base ``AutoModelForCausalLM``-loadable model.
+        base: Path to the base model directory.
         adapter: Path to the DPO PEFT adapter checkpoint.
         output: Destination directory for the merged model.
+        preserve_all_tensors: Keep every base-model tensor in the output.
     """
-    base_model = AutoModelForCausalLM.from_pretrained(str(base))
+    model_class = resolve_model_class(
+        str(base),
+        preserve_all_tensors=preserve_all_tensors,
+    )
+    base_model = model_class.from_pretrained(str(base))
     dpo_model = PeftModel.from_pretrained(base_model, str(adapter))
     merged = dpo_model.merge_and_unload()
     output.mkdir(parents=True, exist_ok=True)

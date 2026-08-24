@@ -170,7 +170,10 @@ config.model.name (base model)
 validate_linear_attention_kernels (if enabled)
         │
         ▼
-AutoModelForCausalLM.from_pretrained(..., device_map="cpu", high precision)
+resolve_model_class(...) → declared architecture (keeps every checkpoint tensor)
+        │
+        ▼
+<resolved class>.from_pretrained(..., device_map="cpu", high precision)
         │
         ▼
 PeftModel.from_pretrained(base_model, final_adapter)
@@ -183,6 +186,8 @@ load_tokenizer(config.model) → tokenizer.save_pretrained(final_merged_model)
 ```
 
 Merge reloads the base on CPU and does not re-apply `attn_implementation` the same way as `load_model`.
+
+The base is reloaded through the architecture its `config.json` declares (`model.preserve_all_tensors`, default `true`), so a multimodal base keeps its vision tower in `final_merged_model` — the merge can only write out what it loaded. Its processor is saved alongside the tokenizer.
 
 ---
 
@@ -336,4 +341,4 @@ Inference uses **dpo_model** if present, otherwise **final_merged_model**.
 
 ---
 
-*Last updated: 2026-08-02*
+*Last updated: 2026-08-23*

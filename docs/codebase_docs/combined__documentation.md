@@ -30,6 +30,7 @@ This file is a **root architecture summary**. For narrative flow see [OVERVIEW](
 *   QLoRA SFT (ICDU data) → merge → DPO (messages JSONL) → optional inference
 *   Hardware-aware `optimize-config` presets
 *   Attention backends + optional Qwen3.5 linear-attention kernels
+*   Full-checkpoint loading (`model.preserve_all_tensors`, default `true`): loads the architecture a checkpoint declares, so a multimodal base keeps its vision tower through merge instead of being silently reduced to its text submodel
 *   Tool agent via `inference_with_tools` (main pipeline); `tools.py` is a lighter sibling
 
 ***
@@ -148,7 +149,7 @@ pytest -m "not slow"
 
 *   `tests/test_config.py`, `test_main_config.py`, `test_main_cli.py`
 *   `tests/test_data.py`, `test_data_scripts_smoke.py`, `test_master_generate_icdu.py`
-*   `tests/test_train.py`, `test_dpo.py`, `test_model_setup.py`, `test_model_optimizer.py`
+*   `tests/test_train.py`, `test_dpo.py`, `test_model_setup.py`, `test_model_optimizer.py`, `test_preserve_tensors.py`
 *   `tests/test_inference_with_tools.py`, `test_tools.py`, `test_tools_module.py`, `test_utils.py`
 
 There is **no** `tests/test_training.py`.
@@ -178,4 +179,4 @@ QLoRA trains low-rank adapters on 4-bit weights. DPO optimizes Bradley-Terry pre
 
 ***
 
-*Last updated: 2026-08-02. Prefer [OVERVIEW](../OVERVIEW.md) and per-module docs for detail.*
+*Last updated: 2026-08-23. Prefer [OVERVIEW](../OVERVIEW.md) and per-module docs for detail.*

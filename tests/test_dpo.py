@@ -669,7 +669,7 @@ def test_prepare_dpo_dataset_partial_missing_keys() -> None:
 
 
 @pytest.mark.unit
-@patch("src.dpo.AutoModelForCausalLM")
+@patch("src.dpo.resolve_model_class")
 @patch("src.dpo.AutoTokenizer")
 @patch("src.dpo.DPOTrainer")
 @patch("src.dpo.prepare_model_for_kbit_training")
@@ -677,12 +677,13 @@ def test_run_dpo_training_success(
     mock_prepare_model: MagicMock,
     mock_dpo_trainer_class: MagicMock,
     mock_tokenizer_class: MagicMock,
-    mock_model_class: MagicMock,
+    mock_resolve_model_class: MagicMock,
 ) -> None:
     """Test successful DPO training run."""
     from datasets import Dataset
 
     # Setup mocks
+    mock_model_class = mock_resolve_model_class.return_value
     mock_tokenizer = MagicMock()
     mock_tokenizer.pad_token = None
     mock_tokenizer.eos_token = "<eos>"
@@ -722,6 +723,8 @@ def test_run_dpo_training_success(
     mock_prepare_model.assert_called_once()
     mock_dpo_trainer_class.assert_called_once()
     mock_trainer.train.assert_called_once()
+    # DPO loads through the resolver so it keeps every base-model tensor too.
+    assert mock_resolve_model_class.call_args.kwargs["preserve_all_tensors"] is True
 
 
 @pytest.mark.unit
@@ -740,11 +743,11 @@ def test_run_dpo_training_empty_dataset() -> None:
 
 
 @pytest.mark.unit
-@patch("src.dpo.AutoModelForCausalLM")
+@patch("src.dpo.resolve_model_class")
 @patch("src.dpo.AutoTokenizer")
 def test_run_dpo_training_with_provided_tokenizer(
     mock_tokenizer_class: MagicMock,
-    mock_model_class: MagicMock,
+    mock_resolve_model_class: MagicMock,
 ) -> None:
     """Test run_dpo_training uses provided tokenizer instead of loading."""
     from datasets import Dataset
@@ -755,6 +758,7 @@ def test_run_dpo_training_with_provided_tokenizer(
     mock_tokenizer.pad_token = None
     mock_tokenizer.eos_token = "<eos>"
 
+    mock_model_class = mock_resolve_model_class.return_value
     mock_model = MagicMock()
     mock_model.config.use_cache = True
     mock_model_class.from_pretrained.return_value = mock_model
@@ -783,7 +787,7 @@ def test_run_dpo_training_with_provided_tokenizer(
 
 
 @pytest.mark.unit
-@patch("src.dpo.AutoModelForCausalLM")
+@patch("src.dpo.resolve_model_class")
 @patch("src.dpo.AutoTokenizer")
 @patch("src.dpo.DPOTrainer")
 @patch("src.dpo.prepare_model_for_kbit_training")
@@ -793,11 +797,12 @@ def test_run_dpo_training_cleans_up_gpu(
     mock_prepare_model: MagicMock,
     mock_dpo_trainer_class: MagicMock,
     mock_tokenizer_class: MagicMock,
-    mock_model_class: MagicMock,
+    mock_resolve_model_class: MagicMock,
 ) -> None:
     """Test run_dpo_training cleans up GPU memory after training."""
     from datasets import Dataset
 
+    mock_model_class = mock_resolve_model_class.return_value
     mock_tokenizer = MagicMock()
     mock_tokenizer.pad_token = None
     mock_tokenizer.eos_token = "<eos>"

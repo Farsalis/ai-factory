@@ -20,6 +20,11 @@ model:
   attn_implementation: "flash_attention_2"
   trust_remote_code: true
   use_linear_attention_kernels: false
+  # Load the checkpoint's declared architecture (e.g. Qwen3_5ForConditionalGeneration)
+  # rather than AutoModelForCausalLM, which silently drops the vision tower of a
+  # multimodal checkpoint and would omit it from the merged model. Set false only to
+  # deliberately export a text-only model.
+  preserve_all_tensors: true
 
 # --- Quantization Configuration ---
 # Settings for 4-bit QLoRA to minimize memory usage.
