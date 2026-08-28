@@ -9,6 +9,7 @@ This module provides the main command-line interface for the complete training p
 
 Usage:
     python -m src.main --config-path config.yaml [--run-inference]
+    python -m src.main --config-path config.yaml --inference-only
     python -m src.main optimize-config --config-path config.yaml \\
         --preset fast --output config_optimized.yaml
 """
@@ -22,14 +23,14 @@ import sys
 from pathlib import Path
 from typing import Any, cast
 
-# Disable transformers' optional torchvision integration before importing torch
-# so CPU-only setups don't trip over the missing dependency.
-os.environ.setdefault("TRANSFORMERS_NO_TORCHVISION", "1")
-os.environ.setdefault("TRANSFORMERS_IMAGE_TRANSFORMS_DISABLED", "1")
-
 import yaml
 
 from src.config import ScriptConfig
+
+# Disable transformers' optional torchvision integration before any later
+# torch/transformers imports (including in run_pipeline / inference).
+os.environ.setdefault("TRANSFORMERS_NO_TORCHVISION", "1")
+os.environ.setdefault("TRANSFORMERS_IMAGE_TRANSFORMS_DISABLED", "1")
 
 # Configure logging before any pipeline work so CLI failures are always visible.
 logging.basicConfig(
@@ -407,7 +408,7 @@ def run_pipeline(
 
 
 def _build_pipeline_parser(prog: str) -> argparse.ArgumentParser:
-    """Build argparse parser for the default training pipeline."""
+    """Build argparse parser for the training pipeline and inference-only mode."""
     parser = argparse.ArgumentParser(
         prog=prog,
         description=(
@@ -421,10 +422,19 @@ def _build_pipeline_parser(prog: str) -> argparse.ArgumentParser:
         type=Path,
         help="Path to configuration YAML file.",
     )
-    parser.add_argument(
+    inference_mode = parser.add_mutually_exclusive_group()
+    inference_mode.add_argument(
         "--run-inference",
         action="store_true",
         help="Run inference after DPO training.",
+    )
+    inference_mode.add_argument(
+        "--inference-only",
+        action="store_true",
+        help=(
+            "Skip SFT, merge, and DPO; run inference against an existing "
+            "checkpoint (dpo_model, else final_merged_model)."
+        ),
     )
     parser.add_argument(
         "--example-queries",
@@ -517,12 +527,16 @@ def _run_optimize_config(argv: list[str]) -> int:
 
 
 def _run_pipeline_cli(argv: list[str]) -> int:
-    """Execute the default training pipeline from CLI arguments."""
+    """Execute the training pipeline or inference-only mode from CLI arguments."""
     parser = _build_pipeline_parser(PROG_NAME)
     args = parser.parse_args(argv)
 
     try:
         config = load_config_from_yaml(args.config_path)
+        if args.inference_only:
+            queries = args.example_queries or DEFAULT_QUERIES
+            run_inference_phase(config, queries)
+            return 0
         use_torch_compile = args.torch_compile or (
             config.dpo.torch_compile if config.dpo else False
         )

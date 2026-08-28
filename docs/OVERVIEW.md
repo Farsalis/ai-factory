@@ -114,6 +114,7 @@ python -m src.main --config-path src/config.yaml
 python -m src.main --config-path src/config.yaml --run-inference
 python -m src.main --config-path src/config.yaml --run-inference \
   --example-queries "Calculate 2+2" --torch-compile
+python -m src.main --config-path src/config.yaml --inference-only
 python -m src.main optimize-config --config-path src/config.yaml \
   --preset balanced -o optimized_config.yaml
 ```

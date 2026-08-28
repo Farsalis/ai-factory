@@ -1,0 +1,33 @@
+# Linux GPU container deps (CUDA 12.4 / torch 2.5.1 / Python 3.10).
+# Do not use the repo-root requirements.txt: that file is a frozen Windows conda dump.
+# Install torch/vision/audio separately in the Dockerfile from the cu124 index.
+
+# Hugging Face stack (aligned with environment.yml)
+transformers>=5.1.0,<6
+datasets>=4.5.0
+accelerate>=1.12.0
+peft>=0.18.0
+trl>=0.27.0
+huggingface_hub>=1.4.0
+safetensors>=0.7.0
+bitsandbytes>=0.49.0
+
+# Config, CLI, HTTP
+pydantic>=2.0
+pyyaml
+typer
+requests
+tqdm
+einops
+psutil
+
+# Data / scientific (dataset generation scripts)
+numpy
+scipy
+scikit-learn
+matplotlib
+pandas
+
+# Tests (image includes tests/ for in-container pytest)
+pytest
+pytest-mock

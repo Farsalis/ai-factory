@@ -13,6 +13,16 @@ conda run -n ai-factory python -m src.main --config-path src/config.yaml
 conda run -n ai-factory python -m src.main optimize-config --config-path src/config.yaml --preset fast --output config_optimized.yaml
 ```
 
+GPU Docker (Windows Docker Desktop WSL2 or Linux NVIDIA; same Compose file):
+
+```bash
+docker compose run --rm gpu-check
+docker compose run --rm train
+docker compose --profile infer run --rm infer
+```
+
+See README **Running with Docker (GPU)** for volumes, `HF_TOKEN`, and optional flash-attn builds.
+
 ## Layout (start here)
 
 | Path | Role |
@@ -26,6 +36,7 @@ conda run -n ai-factory python -m src.main optimize-config --config-path src/con
 | `src/model_optimizer.py`, `src/hardware.py`, `src/utils.py` | Hardware presets / env helpers |
 | `src/data/` | ICDU datasets and generation scripts |
 | `tests/` | pytest suite (run from repo root) |
+| `Dockerfile`, `docker-compose.yml`, `requirements.docker.txt` | Linux CUDA 12.4 GPU image + Compose (`train`, `gpu-check`, `infer` profile) |
 | `docs/OVERVIEW.md` | Architecture + doc index |
 | `docs/codebase_docs/` | Per-module docs |
 | `.cursor/rules/python-lang-styling.mdc` | Python style / tests / design |
@@ -37,6 +48,7 @@ Canonical stack: **conda `ai-factory`** (Python 3.10, torch 2.5.1, cu124 — see
 | Task | Command |
 |------|---------|
 | Installs / train / pytest (preferred) | `conda run -n ai-factory ...` |
+| GPU Docker (Windows Desktop or Linux) | `docker compose run --rm gpu-check` then `train` / `--profile infer` |
 | Pytest (venv, if intentional) | `.\venv\Scripts\python.exe -m pytest` |
 | OpenMP abort before training | `$env:KMP_DUPLICATE_LIB_OK = 'TRUE'` |
 | PATH on PowerShell | `$env:PATH = 'new_segment;' + $env:PATH` (never cmd-style `...;%PATH%`) |

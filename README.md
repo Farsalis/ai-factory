@@ -244,6 +244,53 @@ First, check your conda's CUDA toolkit version and MSVC build tools version. If 
   The wheel must match your **python + torch + cuda + abi** exactly (here `cp310`, `torch2.5.1`,
   `cu124`, `cxx11abiFALSE`); a mismatched wheel may import but crash at model load.
 
+### Running with Docker (GPU)
+
+The same Compose file runs on **Windows Docker Desktop** (WSL2 + NVIDIA GPU) and **Linux NVIDIA** hosts. The image is Linux CUDA 12.4 / Python 3.10 / torch 2.5.1 (pip), not conda. Host Windows conda remains the native workflow.
+
+**Prerequisites**
+
+- Windows: Docker Desktop with the WSL2 backend and NVIDIA GPU support enabled; a recent NVIDIA driver.
+- Linux: NVIDIA driver + [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+- Copy `.env.example` to `.env` and set `HF_TOKEN` if you load gated Hugging Face models.
+- Datasets referenced in `src/config.yaml` must exist under `src/data/` (they are bind-mounted, not baked into the image). Sample config paths such as `icdu_training_data_v8.jsonl` are not in-tree; point the config at files you actually have.
+
+**Commands** (from the repo root)
+
+```bash
+cp .env.example .env   # then edit HF_TOKEN if needed
+
+# Smoke: CUDA visible to PyTorch inside the container
+docker compose run --rm gpu-check
+
+# Full pipeline: QLoRA SFT → merge → DPO
+docker compose run --rm train
+
+# DPO torch.compile (Linux containers; ignored/unreliable on native Windows)
+docker compose run --rm train python -m src.main --config-path src/config.yaml --torch-compile
+
+# Inference only (does not retrain). Requires checkpoints under src/training_output/
+# (dpo_model preferred, else final_merged_model).
+docker compose --profile infer run --rm infer
+docker compose --profile infer run --rm infer python -m src.main \
+  --config-path src/config.yaml --inference-only \
+  --example-queries "Calculate 2+2"
+```
+
+Compose sets `shm_size: 16gb` so DataLoader workers do not fail on `/dev/shm`. Hugging Face downloads persist in the `hf-cache` named volume. Checkpoints persist in `src/training_output/`. Tool-agent file tools use `data/allowed/read` and `data/allowed/write`.
+
+Flash Attention 2 is **off** in the default image; `model_setup` falls back to SDPA if `flash_attn` is missing. To build FA2 into the image (needs the CUDA **devel** base):
+
+```bash
+docker compose build \
+  --build-arg INSTALL_FLASH_ATTN=true \
+  --build-arg BASE_IMAGE=nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+```
+
+Do not change `src/config.yaml` attention defaults unless you intend to. Linear-attention kernels stay disabled unless you install those packages yourself (`model.use_linear_attention_kernels`).
+
+A full SFT run is not a smoke test (hours / VRAM). After `gpu-check`, `docker compose run --rm train python -m src.main --help` is enough to confirm the CLI inside the image.
+
 ---
 
 ## Data Formats

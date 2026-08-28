@@ -61,9 +61,9 @@ ai-factory/
 | Interface | Type | Purpose |
 | --------- | ---- | ------- |
 | `cli(argv=None) -> int` | Function | Top-level dispatch: empty argv → help exit 2; `optimize-config` → optimizer; else pipeline. |
-| `_build_pipeline_parser(prog) -> ArgumentParser` | Function (private) | Pipeline flags: `--config-path`, `--run-inference`, `--example-queries`, `--torch-compile`. |
+| `_build_pipeline_parser(prog) -> ArgumentParser` | Function (private) | Pipeline flags: `--config-path`, `--run-inference` **or** `--inference-only` (mutually exclusive), `--example-queries`, `--torch-compile`. |
 | `_build_optimize_config_parser(prog) -> ArgumentParser` | Function (private) | Optimizer flags: `--config-path`, `-p/--preset`, `-o/--output`. |
-| `_run_pipeline_cli(argv) -> int` | Function (private) | Parse pipeline args, load config, call `run_pipeline`. |
+| `_run_pipeline_cli(argv) -> int` | Function (private) | Parse pipeline args, load config; `--inference-only` → `run_inference_phase`, else `run_pipeline`. |
 | `_run_optimize_config(argv) -> int` | Function (private) | Parse optimizer args, call `run_optimizer`. |
 | `load_config_from_yaml(path: Path) -> ScriptConfig` | Function | Load/validate YAML; resolve relative paths against config parent. |
 | `_resolve_config_paths(config_dict, base_dir) -> dict` | Function (private) | Resolve `data.*`, `training.output_dir`, `dpo.output_dir` / `dpo.train_file`. |
@@ -77,6 +77,8 @@ ai-factory/
 python -m src.main --config-path src/config.yaml
 python -m src.main --config-path src/config.yaml --run-inference \
   --example-queries "Calculate 2+2" --torch-compile
+python -m src.main --config-path src/config.yaml --inference-only \
+  --example-queries "Calculate 2+2"
 python -m src.main optimize-config --config-path src/config.yaml \
   --preset balanced -o optimized.yaml
 ```
@@ -85,10 +87,11 @@ python -m src.main optimize-config --config-path src/config.yaml \
 
 ### Pipeline Entry (`cli` → `_run_pipeline_cli`)
 
-1.  **Parse CLI args** with argparse (`--config-path` required; optional `--run-inference`, repeatable `--example-queries`, `--torch-compile`).
+1.  **Parse CLI args** with argparse (`--config-path` required; optional `--run-inference` **or** `--inference-only`, repeatable `--example-queries`, `--torch-compile`).
 2.  **Load config**: `load_config_from_yaml(config_path)`.
-3.  **Resolve torch_compile**: CLI flag **OR** `config.dpo.torch_compile` (if `dpo` present).
-4.  **Run pipeline**: `run_pipeline(config, ...)`. Exit `0` on success, `1` on failure / KeyboardInterrupt.
+3.  **Inference-only**: if `--inference-only`, call `run_inference_phase` (uses `_find_model_path`: `dpo_model` then `final_merged_model`) and return. Does not run SFT, merge, or DPO.
+4.  **Resolve torch_compile**: CLI flag **OR** `config.dpo.torch_compile` (if `dpo` present).
+5.  **Run pipeline**: `run_pipeline(config, ...)`. `--run-inference` still means “after DPO.” Exit `0` on success, `1` on failure / KeyboardInterrupt.
 
 ### run_pipeline() -- Four Sequential Phases
 
