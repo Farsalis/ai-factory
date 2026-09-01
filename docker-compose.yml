@@ -63,9 +63,8 @@ services:
   train:
     <<: *common
     volumes:
-      - ./src/config.yaml:/workspace/src/config.yaml:ro
-      - ./src/data:/workspace/src/data
-      - ./src/training_output:/workspace/src/training_output
+      # Bind the whole package so host Python/config/data apply without rebuild.
+      - ./src:/workspace/src
       - hf-cache:/hf-cache
     command:
       - python
@@ -84,9 +83,7 @@ services:
       AGENT_ALLOWED_READ_PATH: /data/allowed/read
       AGENT_ALLOWED_WRITE_PATH: /data/allowed/write
     volumes:
-      - ./src/config.yaml:/workspace/src/config.yaml:ro
-      - ./src/data:/workspace/src/data
-      - ./src/training_output:/workspace/src/training_output
+      - ./src:/workspace/src
       - ./data/allowed/read:/data/allowed/read
       - ./data/allowed/write:/data/allowed/write
       - hf-cache:/hf-cache

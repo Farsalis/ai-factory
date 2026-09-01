@@ -34,6 +34,15 @@ from src.utils import Environment
 
 logger = logging.getLogger(__name__)
 
+# Hugging Face EarlyStoppingCallback asserts eval_strategy is steps or epoch.
+_EVAL_STRATEGIES_FOR_EARLY_STOPPING = frozenset({"steps", "epoch"})
+_EARLY_STOPPING_PATIENCE = 3
+
+
+def _eval_is_enabled(eval_strategy: str) -> bool:
+    """Return True when Hugging Face will run an evaluation loop."""
+    return eval_strategy in _EVAL_STRATEGIES_FOR_EARLY_STOPPING
+
 
 def _determine_effective_optimizer(config_optim: str, env: Environment) -> str:
     """Determine the effective optimizer based on environment capabilities.
@@ -90,10 +99,41 @@ def _prepare_training_arguments(
     if "optim" in allowed_fields:
         args_dict["optim"] = effective_optim
 
+    _apply_eval_strategy_fields(
+        args_dict, allowed_fields, config.training.evaluation_strategy
+    )
+
     # Handle load_best_model_at_end logic
     _configure_best_model_loading(args_dict, allowed_fields)
 
     return args_dict
+
+
+def _apply_eval_strategy_fields(
+    args_dict: dict[str, Any],
+    allowed_fields: set[str],
+    eval_strategy: str,
+) -> None:
+    """Keep eval aliases in sync and drop options that require a val loop.
+
+    Newer transformers expose ``eval_strategy`` and may drop
+    ``evaluation_strategy`` from TrainingArguments fields. ``load_best_model_at_end``
+    and EarlyStopping both require eval to be steps or epoch.
+
+    Args:
+        args_dict: TrainingArguments kwargs (modified in place).
+        allowed_fields: Names accepted by the installed TrainingArguments.
+        eval_strategy: Value from TrainingConfig.evaluation_strategy.
+    """
+    if "evaluation_strategy" in allowed_fields:
+        args_dict["evaluation_strategy"] = eval_strategy
+    if "eval_strategy" in allowed_fields:
+        args_dict["eval_strategy"] = eval_strategy
+    if (
+        not _eval_is_enabled(eval_strategy)
+        and "load_best_model_at_end" in allowed_fields
+    ):
+        args_dict["load_best_model_at_end"] = False
 
 
 def _configure_best_model_loading(
@@ -133,6 +173,57 @@ def _configure_best_model_loading(
             args_dict["eval_strategy"] = save_strategy
 
 
+def _early_stopping_callbacks(eval_strategy: str) -> list[EarlyStoppingCallback]:
+    """Return EarlyStoppingCallback only when evaluation will actually run.
+
+    Args:
+        eval_strategy: TrainingConfig.evaluation_strategy (``no``, ``steps``,
+            or ``epoch``).
+
+    Returns:
+        A one-item callback list when eval is enabled; otherwise empty.
+    """
+    if eval_strategy in _EVAL_STRATEGIES_FOR_EARLY_STOPPING:
+        return [
+            EarlyStoppingCallback(early_stopping_patience=_EARLY_STOPPING_PATIENCE)
+        ]
+    logger.info(
+        "Skipping EarlyStoppingCallback: evaluation_strategy=%s "
+        "(requires steps or epoch).",
+        eval_strategy,
+    )
+    return []
+
+
+def _drop_early_stopping_if_eval_disabled(
+    trainer: SFTTrainer, eval_strategy: str
+) -> None:
+    """Remove EarlyStoppingCallback if TRL/transformers injected one.
+
+    Args:
+        trainer: Constructed SFTTrainer.
+        eval_strategy: TrainingConfig.evaluation_strategy.
+    """
+    if _eval_is_enabled(eval_strategy):
+        return
+    handler = getattr(trainer, "callback_handler", None)
+    if handler is None:
+        return
+    remaining = [
+        callback
+        for callback in handler.callbacks
+        if not isinstance(callback, EarlyStoppingCallback)
+    ]
+    dropped = len(handler.callbacks) - len(remaining)
+    if dropped:
+        logger.info(
+            "Removed %s EarlyStoppingCallback(s); evaluation_strategy=%s.",
+            dropped,
+            eval_strategy,
+        )
+        handler.callbacks = remaining
+
+
 def _prepare_trainer_kwargs(
     model: PreTrainedModel,
     training_args: TrainingArguments,
@@ -163,11 +254,12 @@ def _prepare_trainer_kwargs(
         "model": model,
         "args": training_args,
         "train_dataset": dataset["train"],
-        "eval_dataset": dataset["validation"],
         "peft_config": lora_config,
         "data_collator": data_collator,
-        "callbacks": [EarlyStoppingCallback(early_stopping_patience=3)],
+        "callbacks": _early_stopping_callbacks(config.training.evaluation_strategy),
     }
+    if _eval_is_enabled(config.training.evaluation_strategy):
+        trainer_kwargs["eval_dataset"] = dataset["validation"]
 
     # Check SFTTrainer signature for optional parameters
     sft_sig = inspect.signature(SFTTrainer.__init__)
@@ -262,24 +354,20 @@ def _pre_tokenize_datasets(
         }
 
     train_dataset = trainer_kwargs["train_dataset"]
-    eval_dataset = trainer_kwargs["eval_dataset"]
-
     tokenized_train = train_dataset.map(
         tokenize_example,
         remove_columns=list(train_dataset.features),
     ).filter(lambda x: len(x.get("input_ids", [])) > 0)
+    trainer_kwargs["train_dataset"] = tokenized_train
 
-    tokenized_eval = eval_dataset.map(
-        tokenize_example,
-        remove_columns=list(eval_dataset.features),
-    ).filter(lambda x: len(x.get("input_ids", [])) > 0)
+    eval_dataset = trainer_kwargs.get("eval_dataset")
+    if eval_dataset is not None:
+        tokenized_eval = eval_dataset.map(
+            tokenize_example,
+            remove_columns=list(eval_dataset.features),
+        ).filter(lambda x: len(x.get("input_ids", [])) > 0)
+        trainer_kwargs["eval_dataset"] = tokenized_eval
 
-    trainer_kwargs.update(
-        {
-            "train_dataset": tokenized_train,
-            "eval_dataset": tokenized_eval,
-        }
-    )
     trainer_kwargs.pop("dataset_text_field", None)
 
     return trainer_kwargs
@@ -335,6 +423,9 @@ def run_training(
     )
 
     trainer = SFTTrainer(**trainer_kwargs)
+    _drop_early_stopping_if_eval_disabled(
+        trainer, config.training.evaluation_strategy
+    )
 
     logger.info("Starting model training...")
     try:

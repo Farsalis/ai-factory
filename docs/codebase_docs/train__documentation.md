@@ -46,7 +46,10 @@ ai-factory/
 | `_determine_effective_optimizer` | `paged_*` → `adamw_torch` if no CUDA/bnb |
 | `_prepare_training_arguments` | Map `TrainingConfig` → TrainingArguments fields; bf16/fp16; logging_dir |
 | `_configure_best_model_loading` | Sync eval/save strategies for `load_best_model_at_end` |
-| `_prepare_trainer_kwargs` | Collator (`Assistant: `), EarlyStopping(patience=3), TRL signature probes |
+| `_prepare_trainer_kwargs` | Collator (`Assistant: `), EarlyStopping and `eval_dataset` only if eval is `steps`/`epoch` |
+| `_early_stopping_callbacks` | Empty list when `evaluation_strategy` is `no` (HF callback forbids that combo) |
+| `_apply_eval_strategy_fields` | Maps `evaluation_strategy` → `eval_strategy`; forces `load_best_model_at_end=False` when eval is `no` |
+| `_drop_early_stopping_if_eval_disabled` | Strips EarlyStoppingCallback if TRL injected one |
 | `_pre_tokenize_datasets` | Fallback when SFTTrainer lacks `tokenizer` kwarg |
 
 ## 4. Execution and Control Flow
@@ -103,7 +106,7 @@ ICDU JSONL → load_and_prepare_dataset → Dataset(text)
 | ------ | ----- |
 | `trl.SFTTrainer` | Training loop |
 | `peft` | LoRA + merge |
-| `transformers.EarlyStoppingCallback` | patience=3 |
+| `transformers.EarlyStoppingCallback` | patience=3 when eval strategy is `steps` or `epoch`; skipped when `no` |
 | `src.data` | Dataset + collator |
 | `src.model_setup` | Load / kernel validation |
 

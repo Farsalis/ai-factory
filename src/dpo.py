@@ -18,6 +18,7 @@ import json
 import logging
 import random
 from collections.abc import Callable
+from dataclasses import fields as dataclass_fields
 from pathlib import Path
 from typing import Any, cast
 
@@ -462,25 +463,35 @@ def run_dpo_training(
         # hyperparameters like `beta` live inside DPOConfig, not as a DPOTrainer kwarg.
         if DPOConfig is not None:
             # TRL 0.29+ DPOConfig uses only max_length (no max_prompt_length).
-            training_args = DPOConfig(
-                output_dir=output_dir,
-                per_device_train_batch_size=per_device_train_batch_size,
-                gradient_accumulation_steps=gradient_accumulation_steps,
-                learning_rate=learning_rate,
-                logging_steps=logging_steps,
-                max_steps=max_steps,
-                report_to="none",
-                save_strategy="steps",
-                save_steps=save_steps,
-                save_total_limit=save_total_limit,
-                bf16=True,
-                optim=optim,
-                lr_scheduler_type=lr_scheduler_type,
-                warmup_ratio=warmup_ratio,
-                gradient_checkpointing=gradient_checkpointing,
-                beta=beta,
-                max_length=DEFAULT_MAX_LENGTH,
-            )
+            dpo_kwargs: dict[str, Any] = {
+                "output_dir": output_dir,
+                "per_device_train_batch_size": per_device_train_batch_size,
+                "gradient_accumulation_steps": gradient_accumulation_steps,
+                "learning_rate": learning_rate,
+                "logging_steps": logging_steps,
+                "max_steps": max_steps,
+                "report_to": "none",
+                "save_strategy": "steps",
+                "save_steps": save_steps,
+                "save_total_limit": save_total_limit,
+                "bf16": True,
+                "optim": optim,
+                "lr_scheduler_type": lr_scheduler_type,
+                "warmup_ratio": warmup_ratio,
+                "gradient_checkpointing": gradient_checkpointing,
+                "beta": beta,
+                "max_length": DEFAULT_MAX_LENGTH,
+            }
+            dpo_fields: set[str]
+            try:
+                dpo_fields = {field.name for field in dataclass_fields(DPOConfig)}
+            except TypeError:
+                dpo_fields = set(inspect.signature(DPOConfig.__init__).parameters)
+            if "eval_strategy" in dpo_fields:
+                dpo_kwargs["eval_strategy"] = "no"
+            elif "evaluation_strategy" in dpo_fields:
+                dpo_kwargs["evaluation_strategy"] = "no"
+            training_args = DPOConfig(**dpo_kwargs)
         else:
             # Very old TRL fallback
             training_args = TrainingArguments(

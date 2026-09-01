@@ -142,7 +142,7 @@ VectorizedCompletionOnlyCollator(tokenizer, response_template="Assistant: ")
         │  Pads sequences, masks prompt tokens; only assistant response used for loss
         ▼
 PeftLoraConfig + SFTTrainer (TRL)
-        │  EarlyStoppingCallback(patience=3)
+        │  EarlyStoppingCallback(patience=3) if evaluation_strategy is steps/epoch
         │  TrainingArguments from config.training (bf16/fp16 from env)
         ▼
 trainer.train() → trainer.save_model(final_adapter)

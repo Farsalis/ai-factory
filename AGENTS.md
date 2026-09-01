@@ -21,7 +21,7 @@ docker compose run --rm train
 docker compose --profile infer run --rm infer
 ```
 
-See README **Running with Docker (GPU)** for volumes, `HF_TOKEN`, and optional flash-attn builds.
+See README **Running with Docker (GPU)** for volumes, `HF_TOKEN`, and optional flash-attn builds. Compose bind-mounts `src/` so Python/config changes apply without `docker compose build`.
 
 ## Layout (start here)
 

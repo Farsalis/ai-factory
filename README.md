@@ -277,6 +277,8 @@ docker compose --profile infer run --rm infer python -m src.main \
   --example-queries "Calculate 2+2"
 ```
 
+Compose bind-mounts `./src` into the container (Python, `config.yaml`, datasets, `training_output`). **You do not need to rebuild the image** after changing training code or YAML. Rebuild only for Dockerfile / `requirements.docker.txt` / flash-attn.
+
 Compose sets `shm_size: 16gb` so DataLoader workers do not fail on `/dev/shm`. Hugging Face downloads persist in the `hf-cache` named volume. Checkpoints persist in `src/training_output/`. Tool-agent file tools use `data/allowed/read` and `data/allowed/write`.
 
 Flash Attention 2 is **off** in the default image; `model_setup` falls back to SDPA if `flash_attn` is missing. To build FA2 into the image (needs the CUDA **devel** base):
