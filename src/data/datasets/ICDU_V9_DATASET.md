@@ -60,8 +60,9 @@ Metadata is deterministic and conservative:
 
 - Personas use narrow topic and role evidence instead of v8's broad first-match
   rules.
-- Intent is extracted from explicit goal language where possible; otherwise a
-  conservative domain-level intent is used.
+- Intent uses a conservative domain-level objective. The prompt itself carries
+  the specific goal, avoiding misleading extraction of phrases such as "I want
+  to quit" or "How do I fix it?".
 - Governing principle prefers explicit framework headings in the source answer,
   then weighted prompt/answer evidence.
 - Capability layer scores Foundational, Transformational, and Aspirational cues;
