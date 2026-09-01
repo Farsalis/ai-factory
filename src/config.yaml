@@ -10,8 +10,10 @@
 # Point to ICDU-formatted JSONL files for training and validation.
 # Format: JSON Lines (.jsonl), with each line containing ICDU fields (e.g., application_prompt, ideal_response_final).
 data:
-  train_file: "./data/datasets/icdu_training_data_v8.jsonl"
-  validation_file: "./data/datasets/icdu_validation_data_v8.jsonl"
+  # v9 clean core: source-preserved examples with disjoint prompt-family splits.
+  # The sealed test set is intentionally not loaded during training.
+  train_file: "./data/datasets/icdu_training_data_v9.jsonl"
+  validation_file: "./data/datasets/icdu_validation_data_v9.jsonl"
 
 # --- Model Configuration ---
 # Defines the base model and its core parameters.

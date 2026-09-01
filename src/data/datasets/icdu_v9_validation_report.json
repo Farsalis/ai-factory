@@ -1,0 +1,125 @@
+{
+  "canonical_families": 354,
+  "errors": [],
+  "exact_prompt_overlap": {
+    "train_vs_test": 0,
+    "train_vs_validation": 0,
+    "validation_vs_test": 0
+  },
+  "known_v8_augmentation_artifacts": 0,
+  "records": 354,
+  "source_text_preservation": "PASS",
+  "splits": {
+    "test": {
+      "capabilities": {
+        "Aspirational": 3,
+        "Foundational": 47,
+        "Transformational": 4
+      },
+      "personas": {
+        "AI or Technology User > Intentional Adopter": 2,
+        "Career Professional > Workplace Navigator": 12,
+        "Creative Practitioner > Blocked Creator": 3,
+        "Entrepreneur > Business Builder": 1,
+        "Financial Planner > Money Habit Builder": 1,
+        "Framework Learner > Breaking Better Reader": 3,
+        "General User > Problem Solver": 7,
+        "Learner > Skill Builder": 2,
+        "Manager or Team Lead > People Leader": 10,
+        "Organizer > Systems Builder": 2,
+        "Parent or Caregiver > Family Supporter": 1,
+        "Planner or Host > Event Coordinator": 1,
+        "Relationship Navigator > Communication Builder": 6,
+        "Wellness Seeker > Sustainable Habit Builder": 3
+      },
+      "principles": {
+        "Chapter 1 > Clarity": 8,
+        "Chapter 1 > People": 11,
+        "Chapter 1 > Transparency": 1,
+        "Chapter 2 > People": 1,
+        "Chapter 2 > Process": 15,
+        "Chapter 2 > Tools": 12,
+        "Chapter 3 > Aspirational": 1,
+        "Chapter 3 > Foundational": 4,
+        "Chapter 3 > Transformational": 1
+      },
+      "records": 54,
+      "responses_ending_in_question": 0
+    },
+    "train": {
+      "capabilities": {
+        "Aspirational": 14,
+        "Foundational": 195,
+        "Transformational": 31
+      },
+      "personas": {
+        "AI or Technology User > Intentional Adopter": 2,
+        "Career Professional > Workplace Navigator": 30,
+        "Community Participant > Contributor": 2,
+        "Creative Practitioner > Blocked Creator": 18,
+        "Educator > Teaching Innovator": 1,
+        "Entrepreneur > Business Builder": 5,
+        "Financial Planner > Money Habit Builder": 12,
+        "Framework Learner > Breaking Better Reader": 7,
+        "General User > Problem Solver": 65,
+        "Learner > Skill Builder": 6,
+        "Manager or Team Lead > People Leader": 21,
+        "Organizer > Systems Builder": 10,
+        "Parent or Caregiver > Family Supporter": 9,
+        "Pet Owner > Responsible Caregiver": 1,
+        "Planner or Host > Event Coordinator": 4,
+        "Relationship Navigator > Communication Builder": 26,
+        "Wellness Seeker > Sustainable Habit Builder": 21
+      },
+      "principles": {
+        "Chapter 1 > Clarity": 44,
+        "Chapter 1 > People": 54,
+        "Chapter 1 > Transparency": 6,
+        "Chapter 2 > People": 8,
+        "Chapter 2 > Process": 76,
+        "Chapter 2 > Tools": 18,
+        "Chapter 3 > Aspirational": 2,
+        "Chapter 3 > Foundational": 28,
+        "Chapter 3 > Transformational": 4
+      },
+      "records": 240,
+      "responses_ending_in_question": 1
+    },
+    "validation": {
+      "capabilities": {
+        "Aspirational": 4,
+        "Foundational": 49,
+        "Transformational": 7
+      },
+      "personas": {
+        "AI or Technology User > Intentional Adopter": 1,
+        "Career Professional > Workplace Navigator": 8,
+        "Creative Practitioner > Blocked Creator": 4,
+        "Entrepreneur > Business Builder": 1,
+        "Financial Planner > Money Habit Builder": 3,
+        "Framework Learner > Breaking Better Reader": 2,
+        "General User > Problem Solver": 16,
+        "Learner > Skill Builder": 2,
+        "Manager or Team Lead > People Leader": 5,
+        "Organizer > Systems Builder": 3,
+        "Parent or Caregiver > Family Supporter": 2,
+        "Planner or Host > Event Coordinator": 1,
+        "Relationship Navigator > Communication Builder": 7,
+        "Wellness Seeker > Sustainable Habit Builder": 5
+      },
+      "principles": {
+        "Chapter 1 > Clarity": 10,
+        "Chapter 1 > People": 10,
+        "Chapter 1 > Transparency": 2,
+        "Chapter 2 > Process": 19,
+        "Chapter 2 > Tools": 4,
+        "Chapter 3 > Aspirational": 1,
+        "Chapter 3 > Foundational": 12,
+        "Chapter 3 > Transformational": 2
+      },
+      "records": 60,
+      "responses_ending_in_question": 0
+    }
+  },
+  "status": "PASS"
+}
