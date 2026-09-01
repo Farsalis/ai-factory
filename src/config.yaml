@@ -1,7 +1,9 @@
 # ==============================================================================
 # Enhanced QLoRA and DPO Fine-Tuning Configuration
-# - Optimized for RTX 4070 (8GB VRAM, 32GB RAM) to prevent crashes.
-# - Supports ICDU-formatted datasets for the '3-3-3 Strategy' pipeline.
+# Tuned for a desktop RTX 4070 (12GB VRAM) + ~128GB host RAM, typically via
+# Docker Desktop (Linux CUDA container). Prioritizes finishing a run over
+# mid-train eval / full multimodal merge. Do not raise batch size until 2048
+# seq length completes without CUDA OOM (previous 4096/batch-4 run sat at ~96% VRAM).
 # ==============================================================================
 
 # --- Data Configuration ---
@@ -15,16 +17,16 @@ data:
 # Defines the base model and its core parameters.
 model:
   name: "Qwen/Qwen3.5-9B"  # dpo.py uses this to resolve model location, either HF identifier or relative path to dpo.py
-  # Increased max_length to handle verbose ICDU system prompts and contexts.
-  max_length: 4096
-  attn_implementation: "flash_attention_2"
+  # 2048 is ~4x cheaper attention than 4096; ICDU prompts still fit for a first finishable run.
+  max_length: 2048
+  # Default Docker image has no flash_attn (falls back to SDPA anyway). Set
+  # flash_attention_2 after a successful INSTALL_FLASH_ATTN image rebuild.
+  attn_implementation: "sdpa"
   trust_remote_code: true
   use_linear_attention_kernels: false
-  # Load the checkpoint's declared architecture (e.g. Qwen3_5ForConditionalGeneration)
-  # rather than AutoModelForCausalLM, which silently drops the vision tower of a
-  # multimodal checkpoint and would omit it from the merged model. Set false only to
-  # deliberately export a text-only model.
-  preserve_all_tensors: true
+  # Text-only load (AutoModelForCausalLM). Faster and less VRAM than keeping the
+  # vision tower. Set true only if the merged checkpoint must stay multimodal.
+  preserve_all_tensors: false
 
 # --- Quantization Configuration ---
 # Settings for 4-bit QLoRA to minimize memory usage.
@@ -63,21 +65,23 @@ training:
   max_grad_norm: 0.3
   warmup_ratio: 0.03
   lr_scheduler_type: "cosine"
-  evaluation_strategy: "steps"
-  eval_steps: 150
-  save_strategy: "steps"
-  save_steps: 300
-  save_total_limit: 2
-  save_only_model: false
+  # Mid-train eval over 1.5k val rows at long context dominated wall-clock time.
+  evaluation_strategy: "no"
+  eval_steps: 500
+  save_strategy: "epoch"
+  save_steps: 500
+  save_total_limit: 1
+  save_only_model: true
   logging_steps: 10
   group_by_length: true
   gradient_checkpointing: true
   report_to: "none"
-  load_best_model_at_end: true
+  load_best_model_at_end: false
   metric_for_best_model: "eval_loss"
   greater_is_better: false
   remove_unused_columns: true
-  dataloader_num_workers: 2
+  # Linux container + high host/WSL RAM (optimizer would pick 4, not Windows 2).
+  dataloader_num_workers: 4
 
 # --- DPO Configuration ---
 # Parameters for Direct Preference Optimization (DPO) training.
@@ -95,12 +99,10 @@ dpo:
   gradient_accumulation_steps: 2
   optim: "paged_adamw_8bit"
   lr_scheduler_type: "cosine"
-  eval_steps: 50
-  save_steps: 50
-  save_total_limit: 2
+  eval_steps: 100
+  save_steps: 100
+  save_total_limit: 1
   logging_steps: 10
   gradient_checkpointing: true
   warmup_ratio: 0.03
-  torch_compile: false  # Requires Triton (Linux-only); set true on Linux for ~10-30% speedup
-
-# torch_compile: Triton not available on Windows; enable on Linux for faster DPO training.
+  torch_compile: true  # Triton is available in the Linux CUDA container
