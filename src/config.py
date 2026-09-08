@@ -106,6 +106,10 @@ class ModelConfig(BaseModel):
         trust_remote_code: Whether to trust remote code when loading the model.
         preserve_all_tensors: Load the checkpoint's declared architecture so no
             checkpoint tensors are silently discarded.
+        license: SPDX license identifier for model card frontmatter.
+        developers: 'Developed by' credit on generated model cards.
+        card_authors: 'Model Card Authors' credit on generated model cards.
+        card_contacts: 'Model Card Contact' entries, one per rendered line.
 
     Example:
         ```python
@@ -164,6 +168,28 @@ class ModelConfig(BaseModel):
         description=(
             "SPDX license identifier of the fine-tuned weights, used for model "
             "card frontmatter (e.g. 'apache-2.0'). Omitted from cards when unset."
+        ),
+    )
+    developers: str | None = Field(
+        None,
+        description=(
+            "Organization or people credited as 'Developed by' on generated "
+            "model cards. Left as '[More Information Needed]' when unset."
+        ),
+    )
+    card_authors: str | None = Field(
+        None,
+        description=(
+            "Credit for the 'Model Card Authors' section of generated model "
+            "cards. Left as '[More Information Needed]' when unset."
+        ),
+    )
+    card_contacts: list[str] = Field(
+        default_factory=list,
+        description=(
+            "Contacts for the 'Model Card Contact' section, one entry per "
+            "line in the rendered card (e.g. 'Name - name@example.com'). "
+            "Left as '[More Information Needed]' when empty."
         ),
     )
 

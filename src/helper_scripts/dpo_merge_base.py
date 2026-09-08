@@ -60,6 +60,21 @@ def main(
         "--license",
         help="SPDX license identifier for the model card (e.g. 'apache-2.0').",
     ),
+    developers: str | None = typer.Option(
+        None,
+        help="'Developed by' credit for the model card.",
+    ),
+    card_authors: str | None = typer.Option(
+        None,
+        help="'Model Card Authors' credit for the model card.",
+    ),
+    card_contact: list[str] = typer.Option(  # noqa: B008
+        [],
+        help=(
+            "'Model Card Contact' entry, e.g. 'Name - name@example.com'. "
+            "Repeat the option for additional contacts, one per rendered line."
+        ),
+    ),
     preserve_all_tensors: bool = typer.Option(
         True,
         help=(
@@ -77,6 +92,9 @@ def main(
             the adapter when omitted).
         base_model_id: Hub id of the original base model for the model card.
         license_id: SPDX license identifier for the model card.
+        developers: 'Developed by' credit for the model card.
+        card_authors: 'Model Card Authors' credit for the model card.
+        card_contact: 'Model Card Contact' entries (repeatable).
         preserve_all_tensors: Keep every base-model tensor in the output.
     """
     if output is None:
@@ -100,6 +118,9 @@ def main(
             "summary in the training output root for dataset details."
         ),
         license_id=license_id,
+        developers=developers,
+        card_authors=card_authors,
+        card_contacts=tuple(card_contact),
     )
     write_dpo_model_card(
         output,

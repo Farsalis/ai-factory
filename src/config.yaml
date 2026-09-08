@@ -32,6 +32,13 @@ model:
   # License of the fine-tuned weights for generated model cards (Qwen3.5 base
   # weights are Apache-2.0). Remove to omit the license from card frontmatter.
   license: "apache-2.0"
+  # Attribution rendered into every generated model card. Unset fields are left
+  # as "[More Information Needed]" by the Hugging Face template.
+  developers: "[developers]"
+  card_authors: "[card_authors]"
+  card_contacts:
+    - "[dev1]"
+    - "[dev2]"
 
 # --- Quantization Configuration ---
 # Settings for 4-bit QLoRA to minimize memory usage.

@@ -355,3 +355,106 @@ class TestConfigArtifactPaths:
         assert sample_config.training.adapter_path == out / "adapter"
         assert sample_config.training.merged_model_path == out / "sft_merged"
         assert sample_config.dpo_merged_model_path == out / "dpo_model" / "merged"
+
+
+class TestAttribution:
+    """Developed by / Model Card Authors / Model Card Contact plumbing."""
+
+    @pytest.mark.unit
+    def test_sft_card_renders_attribution_from_config(
+        self, sample_config: ScriptConfig
+    ) -> None:
+        """Config attribution replaces the template placeholders on SFT cards."""
+        sample_config.model.developers = "Overture System Solutions (O.S.S.)"
+        sample_config.model.card_authors = "Overture System Solutions (O.S.S.)"
+        sample_config.model.card_contacts = [
+            "Samuel Conrad - samuel.conrad@osscontact.com",
+            "Jordan Martens - jordan.martens@osscontact.com",
+        ]
+
+        card_path = write_sft_model_card(
+            sample_config, sample_config.training.merged_model_path, None
+        )
+        text = card_path.read_text(encoding="utf-8")
+
+        assert "**Developed by:** Overture System Solutions (O.S.S.)" in text
+        authors = text.split("## Model Card Authors")[1]
+        assert "Overture System Solutions (O.S.S.)" in authors
+        contact = text.split("## Model Card Contact")[1]
+        assert "Samuel Conrad - samuel.conrad@osscontact.com" in contact
+        assert "Jordan Martens - jordan.martens@osscontact.com" in contact
+        assert "[More Information Needed]" not in contact
+
+    @pytest.mark.unit
+    def test_contacts_render_on_separate_lines(
+        self, sample_config: ScriptConfig
+    ) -> None:
+        """Each contact is its own markdown block, not a run-on line."""
+        sample_config.model.card_contacts = ["First - a@x.com", "Second - b@x.com"]
+        card_path = write_sft_model_card(
+            sample_config, sample_config.training.merged_model_path, None
+        )
+        contact = card_path.read_text(encoding="utf-8").split("## Model Card Contact")[
+            1
+        ]
+        assert "First - a@x.com\n\nSecond - b@x.com" in contact
+
+    @pytest.mark.unit
+    def test_attribution_placeholders_remain_when_unset(
+        self, sample_config: ScriptConfig
+    ) -> None:
+        """Without config attribution the HF placeholders are left intact."""
+        card_path = write_sft_model_card(
+            sample_config, sample_config.training.merged_model_path, None
+        )
+        text = card_path.read_text(encoding="utf-8")
+        assert "**Developed by:** [More Information Needed]" in text
+        assert "[More Information Needed]" in text.split("## Model Card Contact")[1]
+
+    @pytest.mark.unit
+    def test_dpo_card_renders_attribution_from_context(self, tmp_path: Path) -> None:
+        """DPO cards carry the attribution supplied on the card context."""
+        context = DPOCardContext(
+            base_model=BASE_MODEL,
+            sft_model_path="training_output/final_merged_model",
+            train_data="Preference pairs.",
+            developers="Overture System Solutions (O.S.S.)",
+            card_authors="Overture System Solutions (O.S.S.)",
+            card_contacts=(
+                "Samuel Conrad - samuel.conrad@osscontact.com",
+                "Jordan Martens - jordan.martens@osscontact.com",
+            ),
+        )
+        card_path = write_dpo_model_card(
+            tmp_path / "dpo_merged_model", context, None, library_name="transformers"
+        )
+        text = card_path.read_text(encoding="utf-8")
+
+        assert "**Developed by:** Overture System Solutions (O.S.S.)" in text
+        contact = text.split("## Model Card Contact")[1]
+        assert "samuel.conrad@osscontact.com" in contact
+        assert "jordan.martens@osscontact.com" in contact
+
+    @pytest.mark.unit
+    def test_blank_contacts_are_ignored(self, sample_config: ScriptConfig) -> None:
+        """Empty/whitespace contact entries do not create blank lines."""
+        sample_config.model.card_contacts = ["  ", "", "Only - only@x.com"]
+        card_path = write_sft_model_card(
+            sample_config, sample_config.training.merged_model_path, None
+        )
+        contact = card_path.read_text(encoding="utf-8").split("## Model Card Contact")[
+            1
+        ]
+        assert contact.strip().splitlines()[0] == "Only - only@x.com"
+
+    @pytest.mark.unit
+    def test_shipped_config_yaml_carries_attribution(self) -> None:
+        """The repo's config.yaml defines the expected O.S.S. attribution."""
+        from src.main import load_config_from_yaml
+
+        config = load_config_from_yaml(Path("src/config.yaml"))
+        assert config.model.card_authors == "Overture System Solutions (O.S.S.)"
+        assert config.model.card_contacts == [
+            "Samuel Conrad - samuel.conrad@osscontact.com",
+            "Jordan Martens - jordan.martens@osscontact.com",
+        ]

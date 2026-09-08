@@ -405,6 +405,9 @@ def run_pipeline(
                 "warmup_ratio": dpo_config.warmup_ratio,
             },
             hardware_type=env.device_name,
+            developers=config.model.developers,
+            card_authors=config.model.card_authors,
+            card_contacts=config.model.card_contacts,
         )
 
         dpo_stats = run_dpo_training(

@@ -23,7 +23,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from importlib import metadata as importlib_metadata
@@ -75,6 +75,9 @@ class DPOCardContext:
         license_id: SPDX license identifier, or None to omit from frontmatter.
         hyperparameters: DPO hyperparameters to render on the card.
         hardware_type: GPU/CPU description, or None when unknown.
+        developers: 'Developed by' credit, or None to leave unfilled.
+        card_authors: 'Model Card Authors' credit, or None to leave unfilled.
+        card_contacts: 'Model Card Contact' entries, one per rendered line.
     """
 
     base_model: str
@@ -83,6 +86,9 @@ class DPOCardContext:
     license_id: str | None = None
     hyperparameters: Mapping[str, Any] = field(default_factory=dict)
     hardware_type: str | None = None
+    developers: str | None = None
+    card_authors: str | None = None
+    card_contacts: Sequence[str] = ()
 
 
 def collect_trainer_stats(train_result: Any, trainer: Any) -> dict[str, Any]:
@@ -181,6 +187,24 @@ def _markdown_table(rows: Mapping[str, Any], headers: tuple[str, str]) -> str:
     return "\n".join(lines)
 
 
+def _format_contacts(contacts: Sequence[str]) -> str | None:
+    """Render contact entries so each occupies its own line in the card.
+
+    Entries are joined as separate markdown paragraphs rather than with bare
+    newlines, which markdown would collapse into a single line.
+
+    Args:
+        contacts: Contact strings, e.g. ``"Name - name@example.com"``.
+
+    Returns:
+        Rendered markdown block, or None when there are no contacts.
+    """
+    entries = [contact.strip() for contact in contacts if contact and contact.strip()]
+    if not entries:
+        return None
+    return "\n\n".join(entries)
+
+
 def _training_regime(precision: str, hyperparameters: Mapping[str, Any]) -> str:
     """Build the 'Training regime' template value with a hyperparameter table."""
     if not hyperparameters:
@@ -234,6 +258,9 @@ def _build_stage_card(
     hyperparameters: Mapping[str, Any],
     stats: Mapping[str, Any] | None,
     hardware_type: str | None,
+    developers: str | None = None,
+    card_authors: str | None = None,
+    card_contacts: Sequence[str] = (),
     precision: str = "bf16 mixed precision with 4-bit (NF4) quantized base weights",
 ) -> ModelCard:
     """Render one training-stage model card from the official HF template."""
@@ -268,6 +295,13 @@ def _build_stage_card(
         template_kwargs["results_summary"] = results_summary
     if hardware_type:
         template_kwargs["hardware_type"] = hardware_type
+    if developers:
+        template_kwargs["developers"] = developers
+    if card_authors:
+        template_kwargs["model_card_authors"] = card_authors
+    contacts = _format_contacts(card_contacts)
+    if contacts:
+        template_kwargs["model_card_contact"] = contacts
     if "train_runtime_seconds" in summary:
         template_kwargs["hours_used"] = f"{summary['train_runtime_seconds'] / 3600:.2f}"
     versions = collect_software_versions()
@@ -356,6 +390,9 @@ def write_sft_model_card(
         hyperparameters=hyperparameters,
         stats=stats,
         hardware_type=hardware_type,
+        developers=config.model.developers,
+        card_authors=config.model.card_authors,
+        card_contacts=config.model.card_contacts,
     )
     return _save_card(card, directory)
 
@@ -416,6 +453,9 @@ def write_dpo_model_card(
         hyperparameters=context.hyperparameters,
         stats=stats,
         hardware_type=context.hardware_type,
+        developers=context.developers,
+        card_authors=context.card_authors,
+        card_contacts=context.card_contacts,
     )
     return _save_card(card, directory)
 
