@@ -33,6 +33,20 @@ DEFAULT_LORA_TARGET_MODULES = [
     "down_proj",
 ]
 
+# Default artifact directory names. The SFT artifacts live directly under
+# training.output_dir; all DPO artifacts live under the DPO output directory
+# (training.output_dir / DEFAULT_DPO_OUTPUT_DIRNAME unless dpo.output_dir is set):
+#
+#   training_output/README.md                        overall run summary
+#   training_output/final_adapter/                   SFT LoRA adapter (no card)
+#   training_output/final_merged_model/              merged SFT model + card
+#   training_output/dpo_model/checkpoint-<step>/     DPO checkpoints + cards
+#   training_output/dpo_model/dpo_merged_model/      merged DPO model + card
+DEFAULT_SFT_ADAPTER_DIRNAME = "final_adapter"
+DEFAULT_SFT_MERGED_DIRNAME = "final_merged_model"
+DEFAULT_DPO_OUTPUT_DIRNAME = "dpo_model"
+DEFAULT_DPO_MERGED_DIRNAME = "dpo_merged_model"
+
 
 class DataConfig(BaseModel):
     """Configuration for data loading and processing.
@@ -143,6 +157,13 @@ class ModelConfig(BaseModel):
             "Use optimized linear-attention kernels (causal-conv1d + fla) for "
             "Qwen3.5 Gated DeltaNet layers. Requires optional packages; fails "
             "fast at load time when enabled but dependencies are missing."
+        ),
+    )
+    license: str | None = Field(
+        None,
+        description=(
+            "SPDX license identifier of the fine-tuned weights, used for model "
+            "card frontmatter (e.g. 'apache-2.0'). Omitted from cards when unset."
         ),
     )
 
@@ -409,6 +430,32 @@ class TrainingConfig(BaseModel):
         description="Number of worker processes for data loading",
         ge=0,
     )
+    adapter_dirname: str = Field(
+        DEFAULT_SFT_ADAPTER_DIRNAME,
+        description=(
+            "Subdirectory of output_dir holding the SFT LoRA adapter weights. "
+            "Adapter-only artifact; no model card is written here."
+        ),
+        min_length=1,
+    )
+    merged_model_dirname: str = Field(
+        DEFAULT_SFT_MERGED_DIRNAME,
+        description=(
+            "Subdirectory of output_dir holding the merged SFT model and its "
+            "model card."
+        ),
+        min_length=1,
+    )
+
+    @property
+    def adapter_path(self) -> Path:
+        """Directory the SFT LoRA adapter is saved to."""
+        return self.output_dir / self.adapter_dirname
+
+    @property
+    def merged_model_path(self) -> Path:
+        """Directory the merged SFT model is saved to."""
+        return self.output_dir / self.merged_model_dirname
 
 
 class DPOConfig(BaseModel):
@@ -539,6 +586,14 @@ class DPOConfig(BaseModel):
         False,
         description="Use torch.compile for DPO (PyTorch 2.0+). Enable for fast preset.",
     )
+    merged_model_dirname: str = Field(
+        DEFAULT_DPO_MERGED_DIRNAME,
+        description=(
+            "Subdirectory of the DPO output dir holding the merged DPO model "
+            "and its model card."
+        ),
+        min_length=1,
+    )
 
     @field_validator("train_file")
     @classmethod
@@ -611,3 +666,25 @@ class ScriptConfig(BaseModel):
         None,
         description="DPO training configuration (optional)",
     )
+
+    @property
+    def dpo_output_dir(self) -> Path:
+        """Directory holding all DPO artifacts (checkpoints + merged model).
+
+        Uses dpo.output_dir when configured; otherwise defaults to a
+        ``dpo_model`` subdirectory of the training output dir so DPO artifacts
+        never mix with SFT artifacts.
+        """
+        if self.dpo is not None and self.dpo.output_dir is not None:
+            return self.dpo.output_dir
+        return self.training.output_dir / DEFAULT_DPO_OUTPUT_DIRNAME
+
+    @property
+    def dpo_merged_model_path(self) -> Path:
+        """Directory the merged DPO model is saved to."""
+        dirname = (
+            self.dpo.merged_model_dirname
+            if self.dpo is not None
+            else DEFAULT_DPO_MERGED_DIRNAME
+        )
+        return self.dpo_output_dir / dirname

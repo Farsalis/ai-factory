@@ -29,7 +29,16 @@ from transformers import (
     AutoTokenizer,
     BitsAndBytesConfig,
     PreTrainedTokenizer,
+    TrainerCallback,
+    TrainerControl,
+    TrainerState,
     TrainingArguments,
+)
+
+from src.model_cards import (
+    DPOCardContext,
+    collect_trainer_stats,
+    write_dpo_model_card,
 )
 
 # Ensure compatibility with TRL expecting torch.distributed.fsdp.FSDPModule.
@@ -335,6 +344,54 @@ def prepare_dpo_dataset(preference_data: list[dict[str, Any]]) -> Dataset:
     return Dataset.from_list(preference_data)
 
 
+class DPOCheckpointCardCallback(TrainerCallback):
+    """Write a DPO model card into every ``checkpoint-<step>`` directory.
+
+    TRL's DPOTrainer writes its own card at the run output dir; this callback
+    additionally places a stage-specific card inside each checkpoint folder so
+    every retained checkpoint is self-describing.
+    """
+
+    def __init__(self, card_context: DPOCardContext) -> None:
+        """Store the card metadata used for every checkpoint card."""
+        self._card_context = card_context
+
+    def on_save(
+        self,
+        args: TrainingArguments,
+        state: TrainerState,
+        control: TrainerControl,
+        **kwargs: Any,
+    ) -> None:
+        """Write the card after the trainer has written the checkpoint."""
+        if args.output_dir is None:
+            return
+        checkpoint_dir = Path(args.output_dir) / f"checkpoint-{state.global_step}"
+        if not checkpoint_dir.is_dir():
+            return
+        try:
+            stats = {
+                "metrics": {},
+                "log_history": [
+                    dict(entry)
+                    for entry in state.log_history
+                    if isinstance(entry, dict)
+                ],
+            }
+            write_dpo_model_card(
+                checkpoint_dir,
+                self._card_context,
+                stats,
+                library_name="peft",
+                artifact_note=(
+                    f"This directory is the DPO LoRA adapter checkpoint at "
+                    f"step {state.global_step}."
+                ),
+            )
+        except Exception as exc:  # Card failure must never abort training.
+            logger.warning("Failed to write model card for %s: %s", checkpoint_dir, exc)
+
+
 def run_dpo_training(
     model_path: str,
     dataset: Dataset,
@@ -357,11 +414,14 @@ def run_dpo_training(
     torch_compile: bool = False,
     use_linear_attention_kernels: bool = False,
     preserve_all_tensors: bool = True,
-) -> None:
+    card_context: DPOCardContext | None = None,
+) -> dict[str, Any]:
     """Run DPO training on the preference dataset.
 
     Uses QLoRA (4-bit quantization) with LoRA adapters for memory-efficient training.
     Configures the model, tokenizer, and training arguments, then runs DPO training.
+    Only checkpoints are emitted (no separate final-model directory); merging the
+    latest checkpoint is a separate step (``src.helper_scripts.dpo_merge_base``).
 
     Args:
         model_path: Path to the base model (Hugging Face model ID or local path).
@@ -386,6 +446,12 @@ def run_dpo_training(
         use_linear_attention_kernels: Require causal_conv1d + fla when True.
         preserve_all_tensors: Load the checkpoint's declared architecture so no
             tensors (e.g. a multimodal vision tower) are silently discarded.
+        card_context: Model card metadata. When provided, a DPO model card is
+            written into every checkpoint directory and at the run output dir;
+            when None, no cards are written (CLI / test usage).
+
+    Returns:
+        Trainer statistics (final metrics and log history) for the run summary.
 
     Raises:
         ValueError: If model_path is invalid or dataset is empty.
@@ -526,6 +592,9 @@ def run_dpo_training(
         elif "tokenizer" in dpo_init_params:
             trainer_kwargs["tokenizer"] = tokenizer
 
+        if card_context is not None:
+            trainer_kwargs["callbacks"] = [DPOCheckpointCardCallback(card_context)]
+
         # Only pass beta directly if TRL is old and expects it.
         if DPOConfig is None and "beta" in dpo_init_params:
             trainer_kwargs["beta"] = beta
@@ -545,9 +614,28 @@ def run_dpo_training(
 
         # Train
         logger.info(f"Starting training for {max_steps} steps...")
-        dpo_trainer.train()
+        train_result = dpo_trainer.train()
+        stats = collect_trainer_stats(train_result, dpo_trainer)
 
-        logger.info(f"DPO training complete. Model saved to {output_dir}")
+        logger.info(f"DPO training complete. Checkpoints saved under {output_dir}")
+
+        if card_context is not None:
+            # Replace TRL's auto-generated card at the run root with the
+            # stage-specific one; a card failure must not fail the run.
+            try:
+                write_dpo_model_card(
+                    Path(output_dir),
+                    card_context,
+                    stats,
+                    library_name="peft",
+                    artifact_note=(
+                        "This directory holds the DPO training checkpoints; "
+                        "the merged DPO model is produced separately in its "
+                        "own subdirectory."
+                    ),
+                )
+            except Exception as exc:
+                logger.warning("Failed to write DPO stage model card: %s", exc)
 
         # Clean up GPU memory
         del model
@@ -555,6 +643,8 @@ def run_dpo_training(
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
             logger.info("GPU cache cleared")
+
+        return stats
 
     except Exception as e:
         logger.error(f"DPO training error: {e}", exc_info=True)

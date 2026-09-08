@@ -29,6 +29,9 @@ model:
   # Text-only load (AutoModelForCausalLM). Faster and less VRAM than keeping the
   # vision tower. Set true only if the merged checkpoint must stay multimodal.
   preserve_all_tensors: false
+  # License of the fine-tuned weights for generated model cards (Qwen3.5 base
+  # weights are Apache-2.0). Remove to omit the license from card frontmatter.
+  license: "apache-2.0"
 
 # --- Quantization Configuration ---
 # Settings for 4-bit QLoRA to minimize memory usage.
@@ -91,7 +94,9 @@ training:
 # uses ICDU data (data.train_file) so DPO can use a separate augmented chat file.
 dpo:
   train_file: "./data/datasets/augmented_datasets/breaking_better/bb_training_data_v7.jsonl"  # optional; fallback: data.train_file
-  output_dir: "./training_output"
+  # Keep DPO artifacts (checkpoints + dpo_merged_model) in their own directory
+  # so they never mix with SFT artifacts at the training output root.
+  output_dir: "./training_output/dpo_model"
   learning_rate: 0.000005
   beta: 0.1
   max_steps: 100

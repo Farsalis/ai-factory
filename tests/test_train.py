@@ -901,3 +901,83 @@ def test_run_pipeline_merge_failure(
 
     # Verify training was called
     mock_run_training.assert_called_once()
+
+
+# ============================================================================
+# Tests for model card generation during merge
+# ============================================================================
+
+
+@pytest.mark.unit
+@patch("src.train.AutoProcessor")
+@patch("src.train.load_tokenizer")
+@patch("src.train.resolve_model_class")
+@patch("src.train.PeftModel")
+def test_merge_writes_sft_model_card(
+    mock_peft_model: MagicMock,
+    mock_resolve_model_class: MagicMock,
+    mock_load_tokenizer: MagicMock,
+    mock_auto_processor: MagicMock,
+    sample_config: ScriptConfig,
+    mock_env_cuda: Environment,
+) -> None:
+    """merge_and_save_model writes an HF model card into final_merged_model."""
+    from src.model_cards import MODEL_CARD_FILENAME
+
+    sample_config.training.adapter_path.mkdir(parents=True, exist_ok=True)
+    mock_peft_instance = MagicMock()
+    mock_peft_instance.merge_and_unload.return_value = MagicMock()
+    mock_peft_model.from_pretrained.return_value = mock_peft_instance
+    mock_load_tokenizer.return_value = MagicMock()
+
+    stats = {
+        "metrics": {"train_loss": 1.5, "train_runtime": 60.0},
+        "log_history": [{"loss": 1.5, "step": 5}],
+    }
+    train.merge_and_save_model(sample_config, mock_env_cuda, stats=stats)
+
+    card_path = sample_config.training.merged_model_path / MODEL_CARD_FILENAME
+    card_text = card_path.read_text(encoding="utf-8")
+    assert card_text.startswith("---")
+    assert "base_model: test-model" in card_text
+    assert "library_name: transformers" in card_text
+    assert "sft" in card_text
+    assert "Final training loss | 1.5" in card_text
+    # The adapter directory stays card-free by design.
+    adapter_card = sample_config.training.adapter_path / MODEL_CARD_FILENAME
+    assert not adapter_card.exists()
+
+
+@pytest.mark.unit
+@patch("src.train.SFTTrainer")
+@patch("src.train._prepare_trainer_kwargs")
+@patch("src.train._prepare_training_arguments")
+@patch("src.train.load_and_prepare_dataset")
+def test_run_training_returns_stats(
+    mock_load_dataset: MagicMock,
+    mock_prepare_args: MagicMock,
+    mock_prepare_kwargs: MagicMock,
+    mock_sft_trainer: MagicMock,
+    sample_config: ScriptConfig,
+    mock_env_cuda: Environment,
+    mock_tokenizer: PreTrainedTokenizer,
+    mock_model: PreTrainedModel,
+    mock_dataset: dict[str, Dataset],
+) -> None:
+    """run_training surfaces trainer metrics and log history."""
+    mock_load_dataset.return_value = mock_dataset
+    mock_prepare_args.return_value = {"output_dir": "/tmp", "num_train_epochs": 1}
+    mock_prepare_kwargs.return_value = {"model": mock_model}
+
+    mock_trainer = MagicMock()
+    mock_trainer.train.return_value = MagicMock(metrics={"train_loss": 0.9})
+    mock_trainer.state.log_history = [{"loss": 0.9, "step": 3}]
+    mock_sft_trainer.return_value = mock_trainer
+
+    stats = train.run_training(sample_config, mock_env_cuda, mock_tokenizer, mock_model)
+
+    assert stats["metrics"] == {"train_loss": 0.9}
+    assert stats["log_history"] == [{"loss": 0.9, "step": 3}]
+    # Adapter saved to the configured adapter path
+    save_target = Path(mock_trainer.save_model.call_args.args[0])
+    assert save_target == sample_config.training.adapter_path

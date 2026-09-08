@@ -270,7 +270,7 @@ docker compose run --rm train
 docker compose run --rm train python -m src.main --config-path src/config.yaml --torch-compile
 
 # Inference only (does not retrain). Requires checkpoints under src/training_output/
-# (dpo_model preferred, else final_merged_model).
+# (dpo_model/dpo_merged_model preferred, else final_merged_model).
 docker compose --profile infer run --rm infer
 docker compose --profile infer run --rm infer python -m src.main \
   --config-path src/config.yaml --inference-only \
@@ -523,15 +523,26 @@ Output directory structure:
 
 ```
 output/my-model/
-├── final_adapter/          # LoRA adapter weights
-├── final_merged_model/     # Merged model (base + adapter)
+├── README.md               # Run summary: datasets, hyperparameters, hardware,
+│                           # runtime/loss statistics, artifact pointers
+├── final_adapter/          # SFT LoRA adapter weights (no model card)
+├── final_merged_model/     # Merged SFT model (base + adapter)
+│   ├── README.md           # SFT-stage model card (HF template)
 │   ├── config.json
 │   ├── model.safetensors
 │   └── tokenizer files
-└── dpo_model/             # DPO-trained model
-    ├── adapter_config.json
-    └── adapter_model.safetensors
+└── dpo_model/              # All DPO artifacts
+    ├── README.md           # DPO-stage model card
+    ├── checkpoint-<step>/  # DPO adapter checkpoints, each with its own card
+    └── dpo_merged_model/   # Merged DPO model + DPO model card
+        └── README.md
 ```
+
+Every model directory carries a Hugging Face-standard model card (YAML
+frontmatter + template sections) generated via `huggingface_hub`'s
+`ModelCard` API; `final_adapter/` is intentionally card-free. The merged DPO
+model is produced from the latest checkpoint with
+`python -m src.helper_scripts.dpo_merge_base`.
 
 #### Step 5: Run Inference
 
@@ -540,8 +551,8 @@ output/my-model/
 ```python
 from src.inference_with_tools import load_model_pipeline, agent_loop
 
-# Load the best available model (prefers DPO model)
-model_pipeline = load_model_pipeline("./output/my-model/dpo_model")
+# Load the best available model (prefers the merged DPO model)
+model_pipeline = load_model_pipeline("./output/my-model/dpo_model/dpo_merged_model")
 
 # Run agent loop with tool execution
 response = agent_loop(
@@ -557,7 +568,7 @@ print(response)
 ```bash
 # Using the final_merged_model works too.
 python -m src.inference_with_tools \
-    --model_path ./output/my-model/dpo_model \  
+    --model_path ./output/my-model/dpo_model/dpo_merged_model \  
     --query "Your query here"
 ```
 

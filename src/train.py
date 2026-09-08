@@ -24,6 +24,11 @@ from trl import SFTTrainer  # type: ignore[attr-defined]
 
 from src.config import ScriptConfig
 from src.data import VectorizedCompletionOnlyCollator, load_and_prepare_dataset
+from src.model_cards import (
+    collect_trainer_stats,
+    write_pipeline_run_summary,
+    write_sft_model_card,
+)
 from src.model_setup import (
     load_model,
     load_tokenizer,
@@ -378,7 +383,7 @@ def run_training(
     env: Environment,
     tokenizer: PreTrainedTokenizer,
     model: PreTrainedModel,
-) -> None:
+) -> dict[str, Any]:
     """Conduct supervised fine-tuning (SFT) using QLoRA.
 
     Args:
@@ -386,6 +391,10 @@ def run_training(
         env: Environment object with hardware capabilities.
         tokenizer: Pre-trained tokenizer.
         model: Pre-trained model (typically quantized).
+
+    Returns:
+        Trainer statistics (final metrics and log history) for model cards
+        and the run summary.
 
     Raises:
         RuntimeError: If training fails.
@@ -429,14 +438,18 @@ def run_training(
 
     logger.info("Starting model training...")
     try:
-        trainer.train()
+        train_result = trainer.train()
     except Exception as e:
         logger.error(f"Training failed: {e}")
         raise RuntimeError(f"Training error: {e}") from e
 
-    adapter_save_path = config.training.output_dir / "final_adapter"
+    # Adapter-only artifact: intentionally saved without a model card. The
+    # SFT model card is written next to the merged model instead.
+    adapter_save_path = config.training.adapter_path
     logger.info(f"Training complete. Saving final adapter to {adapter_save_path}")
     trainer.save_model(str(adapter_save_path))
+
+    return collect_trainer_stats(train_result, trainer)
 
 
 def _save_processor(model_name: str, save_path: Path, trust_remote_code: bool) -> None:
@@ -473,23 +486,30 @@ def _save_processor(model_name: str, save_path: Path, trust_remote_code: bool) -
         logger.warning("Failed to save processor: %s", exc)
 
 
-def merge_and_save_model(config: ScriptConfig, env: Environment) -> None:
+def merge_and_save_model(
+    config: ScriptConfig,
+    env: Environment,
+    stats: dict[str, Any] | None = None,
+) -> None:
     """Load base model, merge adapter, and save standalone model.
 
     The base model is reloaded through its declared architecture so that every
     checkpoint tensor — including a multimodal vision tower — is present in the
-    merged artifact rather than being dropped on the way out.
+    merged artifact rather than being dropped on the way out. An SFT-stage
+    model card is written next to the merged weights.
 
     Args:
         config: Script configuration.
         env: Environment object with hardware capabilities.
+        stats: SFT trainer statistics from :func:`run_training`, used to
+            populate the model card; card metrics are omitted when None.
 
     Raises:
         FileNotFoundError: If adapter path doesn't exist.
         RuntimeError: If merging fails.
     """
     logger.info("Starting model merge process...")
-    adapter_path = config.training.output_dir / "final_adapter"
+    adapter_path = config.training.adapter_path
 
     if not adapter_path.exists():
         raise FileNotFoundError(
@@ -534,7 +554,7 @@ def merge_and_save_model(config: ScriptConfig, env: Environment) -> None:
         logger.error(f"Failed to merge adapter: {e}")
         raise RuntimeError(f"Merging error: {e}") from e
 
-    merged_save_path = config.training.output_dir / "final_merged_model"
+    merged_save_path = config.training.merged_model_path
     merged_save_path.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Saving merged model to {merged_save_path}...")
@@ -559,6 +579,14 @@ def merge_and_save_model(config: ScriptConfig, env: Environment) -> None:
             config.model.trust_remote_code,
         )
 
+    # A card failure must never discard a finished merge.
+    try:
+        write_sft_model_card(
+            config, merged_save_path, stats, hardware_type=env.device_name
+        )
+    except Exception as exc:
+        logger.warning("Failed to write SFT model card: %s", exc)
+
     logger.info("Merged model and tokenizer saved successfully.")
 
 
@@ -579,10 +607,11 @@ def run_pipeline(config: ScriptConfig) -> None:
     torch.manual_seed(config.training.seed)
 
     logger.info("--- Entering Training Phase ---")
+    sft_stats: dict[str, Any] | None = None
     try:
         tokenizer = load_tokenizer(config.model)
         quantized_model = load_model(config.model, config.quantization, env)
-        run_training(config, env, tokenizer, quantized_model)
+        sft_stats = run_training(config, env, tokenizer, quantized_model)
     except Exception as e:
         logger.error(f"Training phase failed: {e}")
         raise
@@ -595,9 +624,18 @@ def run_pipeline(config: ScriptConfig) -> None:
 
     logger.info("--- Entering Merging Phase ---")
     try:
-        merge_and_save_model(config, env)
+        merge_and_save_model(config, env, stats=sft_stats)
     except Exception as e:
         logger.error(f"Merging phase failed: {e}")
         raise
+
+    try:
+        write_pipeline_run_summary(
+            config,
+            sft_stats=sft_stats,
+            hardware={"Device": env.device_name},
+        )
+    except Exception as exc:
+        logger.warning("Failed to write run summary: %s", exc)
 
     logger.info("Pipeline finished successfully.")

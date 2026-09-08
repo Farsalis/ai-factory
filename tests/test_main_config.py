@@ -139,16 +139,16 @@ dpo:
 
 
 @pytest.mark.unit
-def test_find_model_path_prefers_dpo(tmp_path: Path) -> None:
-    """When dpo_model exists under output_dir, it is chosen over final_merged_model."""
+def test_find_model_path_prefers_merged_dpo(tmp_path: Path) -> None:
+    """The merged DPO model is chosen over final_merged_model when present."""
     cfg_dir = tmp_path / "cfg"
     config_path = _write_minimal_config_tree(cfg_dir)
     config = load_config_from_yaml(config_path)
     out = config.training.output_dir
-    (out / "dpo_model").mkdir(parents=True)
+    (out / "dpo_model" / "dpo_merged_model").mkdir(parents=True)
     (out / "final_merged_model").mkdir(parents=True)
     chosen = _find_model_path(config)
-    assert chosen.resolve() == (out / "dpo_model").resolve()
+    assert chosen.resolve() == (out / "dpo_model" / "dpo_merged_model").resolve()
 
 
 @pytest.mark.unit
@@ -174,29 +174,34 @@ def test_find_model_path_raises_when_no_model_dirs(tmp_path: Path) -> None:
 
 
 @pytest.mark.unit
-def test_find_model_path_artifact_contract_dpo_over_merged(tmp_path: Path) -> None:
-    """Artifact contract: dpo_model is always preferred when it exists."""
+def test_find_model_path_ignores_bare_dpo_run_dir(tmp_path: Path) -> None:
+    """A dpo_model dir holding only checkpoints is not loadable; use merged SFT."""
     cfg_dir = tmp_path / "cfg"
     config_path = _write_minimal_config_tree(cfg_dir)
     config = load_config_from_yaml(config_path)
     out = config.training.output_dir
 
-    (out / "dpo_model").mkdir(parents=True)
-    (out / "final_merged_model").mkdir(parents=True)
-
-    chosen = _find_model_path(config)
-    assert chosen.name == "dpo_model"
-
-
-@pytest.mark.unit
-def test_find_model_path_artifact_contract_merged_only(tmp_path: Path) -> None:
-    """Artifact contract: final_merged_model is used when dpo_model is absent."""
-    cfg_dir = tmp_path / "cfg"
-    config_path = _write_minimal_config_tree(cfg_dir)
-    config = load_config_from_yaml(config_path)
-    out = config.training.output_dir
-
+    (out / "dpo_model" / "checkpoint-100").mkdir(parents=True)
     (out / "final_merged_model").mkdir(parents=True)
 
     chosen = _find_model_path(config)
     assert chosen.name == "final_merged_model"
+
+
+@pytest.mark.unit
+def test_find_model_path_respects_configured_dpo_output_dir(tmp_path: Path) -> None:
+    """dpo.output_dir from the config drives where the merged DPO model is sought."""
+    cfg_dir = tmp_path / "cfg"
+    extra = """
+dpo:
+  output_dir: custom_dpo
+"""
+    config_path = _write_minimal_config_tree(cfg_dir, extra_yaml=extra)
+    config = load_config_from_yaml(config_path)
+
+    assert config.dpo is not None and config.dpo.output_dir is not None
+    (config.dpo.output_dir / "dpo_merged_model").mkdir(parents=True)
+    (config.training.output_dir / "final_merged_model").mkdir(parents=True)
+
+    chosen = _find_model_path(config)
+    assert chosen.resolve() == (config.dpo.output_dir / "dpo_merged_model").resolve()

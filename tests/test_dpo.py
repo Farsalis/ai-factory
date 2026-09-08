@@ -836,3 +836,166 @@ def test_run_dpo_training_cleans_up_gpu(
 
         # Should clean up GPU cache
         mock_empty_cache.assert_called_once()
+
+
+# ============================================================================
+# Tests for DPO model card generation
+# ============================================================================
+
+
+@pytest.mark.unit
+def test_checkpoint_card_callback_writes_card(tmp_path: Path) -> None:
+    """on_save drops a DPO model card inside the just-written checkpoint dir."""
+    from src.dpo import DPOCheckpointCardCallback
+    from src.model_cards import MODEL_CARD_FILENAME, DPOCardContext
+
+    checkpoint_dir = tmp_path / "checkpoint-100"
+    checkpoint_dir.mkdir(parents=True)
+
+    context = DPOCardContext(
+        base_model="Qwen/Qwen3.5-9B",
+        sft_model_path="training_output/final_merged_model",
+        train_data="Preference pairs.",
+        license_id="apache-2.0",
+        hyperparameters={"beta": 0.1},
+    )
+    callback = DPOCheckpointCardCallback(context)
+
+    args = MagicMock(output_dir=str(tmp_path))
+    state = MagicMock(global_step=100, log_history=[{"loss": 0.4, "step": 100}])
+    callback.on_save(args, state, MagicMock())
+
+    card_text = (checkpoint_dir / MODEL_CARD_FILENAME).read_text(encoding="utf-8")
+    assert card_text.startswith("---")
+    assert "base_model: Qwen/Qwen3.5-9B" in card_text
+    assert "library_name: peft" in card_text
+    assert "step 100" in card_text
+
+
+@pytest.mark.unit
+def test_checkpoint_card_callback_skips_missing_dir(tmp_path: Path) -> None:
+    """No checkpoint directory means no card and no error."""
+    from src.dpo import DPOCheckpointCardCallback
+    from src.model_cards import DPOCardContext
+
+    context = DPOCardContext(base_model="m", sft_model_path="p", train_data="d")
+    callback = DPOCheckpointCardCallback(context)
+    args = MagicMock(output_dir=str(tmp_path))
+    state = MagicMock(global_step=50, log_history=[])
+
+    callback.on_save(args, state, MagicMock())
+
+    assert not list(tmp_path.iterdir())
+
+
+@pytest.mark.unit
+@patch("src.dpo.resolve_model_class")
+@patch("src.dpo.AutoTokenizer")
+@patch("src.dpo.DPOTrainer")
+@patch("src.dpo.prepare_model_for_kbit_training")
+def test_run_dpo_training_with_card_context_writes_stage_card(
+    mock_prepare_model: MagicMock,
+    mock_dpo_trainer_class: MagicMock,
+    mock_tokenizer_class: MagicMock,
+    mock_resolve_model_class: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """With a card context, the run dir gets a DPO stage card and callbacks."""
+    from datasets import Dataset
+
+    from src.model_cards import MODEL_CARD_FILENAME, DPOCardContext
+
+    mock_tokenizer = MagicMock()
+    mock_tokenizer.pad_token = "<pad>"
+    mock_tokenizer_class.from_pretrained.return_value = mock_tokenizer
+
+    mock_model = MagicMock()
+    mock_prepare_model.return_value = mock_model
+    mock_resolve_model_class.return_value.from_pretrained.return_value = mock_model
+
+    mock_trainer = MagicMock()
+    mock_trainer.train.return_value = MagicMock(metrics={"train_loss": 0.5})
+    mock_trainer.state.log_history = [{"loss": 0.5, "step": 10}]
+    mock_dpo_trainer_class.return_value = mock_trainer
+
+    dataset = Dataset.from_list(
+        [
+            {
+                "prompt": "[INST]Question[/INST]",
+                "chosen": "Answer",
+                "rejected": "Wrong answer",
+            }
+        ]
+    )
+    output_dir = tmp_path / "dpo_model"
+    context = DPOCardContext(
+        base_model="Qwen/Qwen3.5-9B",
+        sft_model_path="training_output/final_merged_model",
+        train_data="Preference pairs.",
+    )
+
+    stats = run_dpo_training(
+        "mistralai/Mistral-7B-Instruct-v0.3",
+        dataset,
+        str(output_dir),
+        max_steps=1,
+        card_context=context,
+    )
+
+    assert stats["metrics"] == {"train_loss": 0.5}
+    assert stats["log_history"] == [{"loss": 0.5, "step": 10}]
+    # Checkpoint-card callback registered on the trainer
+    trainer_kwargs = mock_dpo_trainer_class.call_args.kwargs
+    assert "callbacks" in trainer_kwargs and len(trainer_kwargs["callbacks"]) == 1
+    # Stage card written at the DPO run root
+    stage_card = (output_dir / MODEL_CARD_FILENAME).read_text(encoding="utf-8")
+    assert "library_name: peft" in stage_card
+    assert "checkpoints" in stage_card
+
+
+@pytest.mark.unit
+@patch("src.dpo.resolve_model_class")
+@patch("src.dpo.AutoTokenizer")
+@patch("src.dpo.DPOTrainer")
+@patch("src.dpo.prepare_model_for_kbit_training")
+def test_run_dpo_training_without_card_context_writes_no_card(
+    mock_prepare_model: MagicMock,
+    mock_dpo_trainer_class: MagicMock,
+    mock_tokenizer_class: MagicMock,
+    mock_resolve_model_class: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Without a card context (CLI usage), no cards or callbacks are added."""
+    from datasets import Dataset
+
+    from src.model_cards import MODEL_CARD_FILENAME
+
+    mock_tokenizer = MagicMock()
+    mock_tokenizer.pad_token = "<pad>"
+    mock_tokenizer_class.from_pretrained.return_value = mock_tokenizer
+    mock_model = MagicMock()
+    mock_prepare_model.return_value = mock_model
+    mock_resolve_model_class.return_value.from_pretrained.return_value = mock_model
+    mock_dpo_trainer_class.return_value = MagicMock()
+
+    dataset = Dataset.from_list(
+        [
+            {
+                "prompt": "[INST]Question[/INST]",
+                "chosen": "Answer",
+                "rejected": "Wrong answer",
+            }
+        ]
+    )
+    output_dir = tmp_path / "dpo_out"
+
+    stats = run_dpo_training(
+        "mistralai/Mistral-7B-Instruct-v0.3",
+        dataset,
+        str(output_dir),
+        max_steps=1,
+    )
+
+    assert stats == {"metrics": {}, "log_history": []}
+    assert "callbacks" not in mock_dpo_trainer_class.call_args.kwargs
+    assert not (output_dir / MODEL_CARD_FILENAME).exists()
