@@ -17,6 +17,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
+# Candidate drafting (src/data/draft_icdu_candidates.py) calls the Claude API.
+draft = [
+    "anthropic",
+]
 dev = [
     "ruff",
     "mypy",

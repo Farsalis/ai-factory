@@ -67,7 +67,10 @@ lora:
 training:
   output_dir: "./training_output"
   seed: 42
-  num_train_epochs: 1
+  # 240 rows at effective batch 8 is ~30 optimizer steps per epoch; three
+  # epochs (~90 steps) is a minimal QLoRA budget. Early stopping (patience 3
+  # evals) halts sooner if validation loss climbs.
+  num_train_epochs: 3
   per_device_train_batch_size: 4
   per_device_eval_batch_size: 4
   gradient_accumulation_steps: 2
@@ -78,17 +81,21 @@ training:
   warmup_ratio: 0.03
   lr_scheduler_type: "cosine"
   # Mid-train eval over 1.5k val rows at long context dominated wall-clock time.
-  evaluation_strategy: "no"
-  eval_steps: 500
-  save_strategy: "epoch"
-  save_steps: 500
-  save_total_limit: 1
+  # Evaluate on the 60-row v9 validation split every 10 steps so checkpoint
+  # selection and overfitting detection actually happen. save_* must mirror
+  # eval_* for load_best_model_at_end, and save_steps must be a multiple of
+  # eval_steps. Set evaluation_strategy back to "no" only for a smoke run.
+  evaluation_strategy: "steps"
+  eval_steps: 10
+  save_strategy: "steps"
+  save_steps: 10
+  save_total_limit: 2  # best + latest
   save_only_model: true
   logging_steps: 10
   group_by_length: true
   gradient_checkpointing: true
   report_to: "none"
-  load_best_model_at_end: false
+  load_best_model_at_end: true
   metric_for_best_model: "eval_loss"
   greater_is_better: false
   remove_unused_columns: true
