@@ -24,6 +24,11 @@ from trl import SFTTrainer  # type: ignore[attr-defined]
 
 from src.config import ScriptConfig
 from src.data import VectorizedCompletionOnlyCollator, load_and_prepare_dataset
+from src.model_cards import (
+    collect_trainer_stats,
+    write_pipeline_run_summary,
+    write_sft_model_card,
+)
 from src.model_setup import (
     load_model,
     load_tokenizer,
@@ -33,6 +38,15 @@ from src.model_setup import (
 from src.utils import Environment
 
 logger = logging.getLogger(__name__)
+
+# Hugging Face EarlyStoppingCallback asserts eval_strategy is steps or epoch.
+_EVAL_STRATEGIES_FOR_EARLY_STOPPING = frozenset({"steps", "epoch"})
+_EARLY_STOPPING_PATIENCE = 3
+
+
+def _eval_is_enabled(eval_strategy: str) -> bool:
+    """Return True when Hugging Face will run an evaluation loop."""
+    return eval_strategy in _EVAL_STRATEGIES_FOR_EARLY_STOPPING
 
 
 def _determine_effective_optimizer(config_optim: str, env: Environment) -> str:
@@ -90,10 +104,41 @@ def _prepare_training_arguments(
     if "optim" in allowed_fields:
         args_dict["optim"] = effective_optim
 
+    _apply_eval_strategy_fields(
+        args_dict, allowed_fields, config.training.evaluation_strategy
+    )
+
     # Handle load_best_model_at_end logic
     _configure_best_model_loading(args_dict, allowed_fields)
 
     return args_dict
+
+
+def _apply_eval_strategy_fields(
+    args_dict: dict[str, Any],
+    allowed_fields: set[str],
+    eval_strategy: str,
+) -> None:
+    """Keep eval aliases in sync and drop options that require a val loop.
+
+    Newer transformers expose ``eval_strategy`` and may drop
+    ``evaluation_strategy`` from TrainingArguments fields. ``load_best_model_at_end``
+    and EarlyStopping both require eval to be steps or epoch.
+
+    Args:
+        args_dict: TrainingArguments kwargs (modified in place).
+        allowed_fields: Names accepted by the installed TrainingArguments.
+        eval_strategy: Value from TrainingConfig.evaluation_strategy.
+    """
+    if "evaluation_strategy" in allowed_fields:
+        args_dict["evaluation_strategy"] = eval_strategy
+    if "eval_strategy" in allowed_fields:
+        args_dict["eval_strategy"] = eval_strategy
+    if (
+        not _eval_is_enabled(eval_strategy)
+        and "load_best_model_at_end" in allowed_fields
+    ):
+        args_dict["load_best_model_at_end"] = False
 
 
 def _configure_best_model_loading(
@@ -133,6 +178,57 @@ def _configure_best_model_loading(
             args_dict["eval_strategy"] = save_strategy
 
 
+def _early_stopping_callbacks(eval_strategy: str) -> list[EarlyStoppingCallback]:
+    """Return EarlyStoppingCallback only when evaluation will actually run.
+
+    Args:
+        eval_strategy: TrainingConfig.evaluation_strategy (``no``, ``steps``,
+            or ``epoch``).
+
+    Returns:
+        A one-item callback list when eval is enabled; otherwise empty.
+    """
+    if eval_strategy in _EVAL_STRATEGIES_FOR_EARLY_STOPPING:
+        return [
+            EarlyStoppingCallback(early_stopping_patience=_EARLY_STOPPING_PATIENCE)
+        ]
+    logger.info(
+        "Skipping EarlyStoppingCallback: evaluation_strategy=%s "
+        "(requires steps or epoch).",
+        eval_strategy,
+    )
+    return []
+
+
+def _drop_early_stopping_if_eval_disabled(
+    trainer: SFTTrainer, eval_strategy: str
+) -> None:
+    """Remove EarlyStoppingCallback if TRL/transformers injected one.
+
+    Args:
+        trainer: Constructed SFTTrainer.
+        eval_strategy: TrainingConfig.evaluation_strategy.
+    """
+    if _eval_is_enabled(eval_strategy):
+        return
+    handler = getattr(trainer, "callback_handler", None)
+    if handler is None:
+        return
+    remaining = [
+        callback
+        for callback in handler.callbacks
+        if not isinstance(callback, EarlyStoppingCallback)
+    ]
+    dropped = len(handler.callbacks) - len(remaining)
+    if dropped:
+        logger.info(
+            "Removed %s EarlyStoppingCallback(s); evaluation_strategy=%s.",
+            dropped,
+            eval_strategy,
+        )
+        handler.callbacks = remaining
+
+
 def _prepare_trainer_kwargs(
     model: PreTrainedModel,
     training_args: TrainingArguments,
@@ -163,11 +259,12 @@ def _prepare_trainer_kwargs(
         "model": model,
         "args": training_args,
         "train_dataset": dataset["train"],
-        "eval_dataset": dataset["validation"],
         "peft_config": lora_config,
         "data_collator": data_collator,
-        "callbacks": [EarlyStoppingCallback(early_stopping_patience=3)],
+        "callbacks": _early_stopping_callbacks(config.training.evaluation_strategy),
     }
+    if _eval_is_enabled(config.training.evaluation_strategy):
+        trainer_kwargs["eval_dataset"] = dataset["validation"]
 
     # Check SFTTrainer signature for optional parameters
     sft_sig = inspect.signature(SFTTrainer.__init__)
@@ -262,24 +359,20 @@ def _pre_tokenize_datasets(
         }
 
     train_dataset = trainer_kwargs["train_dataset"]
-    eval_dataset = trainer_kwargs["eval_dataset"]
-
     tokenized_train = train_dataset.map(
         tokenize_example,
         remove_columns=list(train_dataset.features),
     ).filter(lambda x: len(x.get("input_ids", [])) > 0)
+    trainer_kwargs["train_dataset"] = tokenized_train
 
-    tokenized_eval = eval_dataset.map(
-        tokenize_example,
-        remove_columns=list(eval_dataset.features),
-    ).filter(lambda x: len(x.get("input_ids", [])) > 0)
+    eval_dataset = trainer_kwargs.get("eval_dataset")
+    if eval_dataset is not None:
+        tokenized_eval = eval_dataset.map(
+            tokenize_example,
+            remove_columns=list(eval_dataset.features),
+        ).filter(lambda x: len(x.get("input_ids", [])) > 0)
+        trainer_kwargs["eval_dataset"] = tokenized_eval
 
-    trainer_kwargs.update(
-        {
-            "train_dataset": tokenized_train,
-            "eval_dataset": tokenized_eval,
-        }
-    )
     trainer_kwargs.pop("dataset_text_field", None)
 
     return trainer_kwargs
@@ -290,7 +383,7 @@ def run_training(
     env: Environment,
     tokenizer: PreTrainedTokenizer,
     model: PreTrainedModel,
-) -> None:
+) -> dict[str, Any]:
     """Conduct supervised fine-tuning (SFT) using QLoRA.
 
     Args:
@@ -298,6 +391,10 @@ def run_training(
         env: Environment object with hardware capabilities.
         tokenizer: Pre-trained tokenizer.
         model: Pre-trained model (typically quantized).
+
+    Returns:
+        Trainer statistics (final metrics and log history) for model cards
+        and the run summary.
 
     Raises:
         RuntimeError: If training fails.
@@ -335,17 +432,24 @@ def run_training(
     )
 
     trainer = SFTTrainer(**trainer_kwargs)
+    _drop_early_stopping_if_eval_disabled(
+        trainer, config.training.evaluation_strategy
+    )
 
     logger.info("Starting model training...")
     try:
-        trainer.train()
+        train_result = trainer.train()
     except Exception as e:
         logger.error(f"Training failed: {e}")
         raise RuntimeError(f"Training error: {e}") from e
 
-    adapter_save_path = config.training.output_dir / "final_adapter"
+    # Adapter-only artifact: intentionally saved without a model card. The
+    # SFT model card is written next to the merged model instead.
+    adapter_save_path = config.training.adapter_path
     logger.info(f"Training complete. Saving final adapter to {adapter_save_path}")
     trainer.save_model(str(adapter_save_path))
+
+    return collect_trainer_stats(train_result, trainer)
 
 
 def _save_processor(model_name: str, save_path: Path, trust_remote_code: bool) -> None:
@@ -382,23 +486,30 @@ def _save_processor(model_name: str, save_path: Path, trust_remote_code: bool) -
         logger.warning("Failed to save processor: %s", exc)
 
 
-def merge_and_save_model(config: ScriptConfig, env: Environment) -> None:
+def merge_and_save_model(
+    config: ScriptConfig,
+    env: Environment,
+    stats: dict[str, Any] | None = None,
+) -> None:
     """Load base model, merge adapter, and save standalone model.
 
     The base model is reloaded through its declared architecture so that every
     checkpoint tensor — including a multimodal vision tower — is present in the
-    merged artifact rather than being dropped on the way out.
+    merged artifact rather than being dropped on the way out. An SFT-stage
+    model card is written next to the merged weights.
 
     Args:
         config: Script configuration.
         env: Environment object with hardware capabilities.
+        stats: SFT trainer statistics from :func:`run_training`, used to
+            populate the model card; card metrics are omitted when None.
 
     Raises:
         FileNotFoundError: If adapter path doesn't exist.
         RuntimeError: If merging fails.
     """
     logger.info("Starting model merge process...")
-    adapter_path = config.training.output_dir / "final_adapter"
+    adapter_path = config.training.adapter_path
 
     if not adapter_path.exists():
         raise FileNotFoundError(
@@ -443,7 +554,7 @@ def merge_and_save_model(config: ScriptConfig, env: Environment) -> None:
         logger.error(f"Failed to merge adapter: {e}")
         raise RuntimeError(f"Merging error: {e}") from e
 
-    merged_save_path = config.training.output_dir / "final_merged_model"
+    merged_save_path = config.training.merged_model_path
     merged_save_path.mkdir(parents=True, exist_ok=True)
 
     logger.info(f"Saving merged model to {merged_save_path}...")
@@ -468,6 +579,14 @@ def merge_and_save_model(config: ScriptConfig, env: Environment) -> None:
             config.model.trust_remote_code,
         )
 
+    # A card failure must never discard a finished merge.
+    try:
+        write_sft_model_card(
+            config, merged_save_path, stats, hardware_type=env.device_name
+        )
+    except Exception as exc:
+        logger.warning("Failed to write SFT model card: %s", exc)
+
     logger.info("Merged model and tokenizer saved successfully.")
 
 
@@ -488,10 +607,11 @@ def run_pipeline(config: ScriptConfig) -> None:
     torch.manual_seed(config.training.seed)
 
     logger.info("--- Entering Training Phase ---")
+    sft_stats: dict[str, Any] | None = None
     try:
         tokenizer = load_tokenizer(config.model)
         quantized_model = load_model(config.model, config.quantization, env)
-        run_training(config, env, tokenizer, quantized_model)
+        sft_stats = run_training(config, env, tokenizer, quantized_model)
     except Exception as e:
         logger.error(f"Training phase failed: {e}")
         raise
@@ -504,9 +624,18 @@ def run_pipeline(config: ScriptConfig) -> None:
 
     logger.info("--- Entering Merging Phase ---")
     try:
-        merge_and_save_model(config, env)
+        merge_and_save_model(config, env, stats=sft_stats)
     except Exception as e:
         logger.error(f"Merging phase failed: {e}")
         raise
+
+    try:
+        write_pipeline_run_summary(
+            config,
+            sft_stats=sft_stats,
+            hardware={"Device": env.device_name},
+        )
+    except Exception as exc:
+        logger.warning("Failed to write run summary: %s", exc)
 
     logger.info("Pipeline finished successfully.")

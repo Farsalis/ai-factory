@@ -244,6 +244,55 @@ First, check your conda's CUDA toolkit version and MSVC build tools version. If 
   The wheel must match your **python + torch + cuda + abi** exactly (here `cp310`, `torch2.5.1`,
   `cu124`, `cxx11abiFALSE`); a mismatched wheel may import but crash at model load.
 
+### Running with Docker (GPU)
+
+The same Compose file runs on **Windows Docker Desktop** (WSL2 + NVIDIA GPU) and **Linux NVIDIA** hosts. The image is Linux CUDA 12.4 / Python 3.10 / torch 2.5.1 (pip), not conda. Host Windows conda remains the native workflow.
+
+**Prerequisites**
+
+- Windows: Docker Desktop with the WSL2 backend and NVIDIA GPU support enabled; a recent NVIDIA driver.
+- Linux: NVIDIA driver + [NVIDIA Container Toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html).
+- Copy `.env.example` to `.env` and set `HF_TOKEN` if you load gated Hugging Face models.
+- Datasets referenced in `src/config.yaml` must exist under `src/data/` (they are bind-mounted, not baked into the image). Sample config paths such as `icdu_training_data_v8.jsonl` are not in-tree; point the config at files you actually have.
+
+**Commands** (from the repo root)
+
+```bash
+cp .env.example .env   # then edit HF_TOKEN if needed
+
+# Smoke: CUDA visible to PyTorch inside the container
+docker compose run --rm gpu-check
+
+# Full pipeline: QLoRA SFT → merge → DPO
+docker compose run --rm train
+
+# DPO torch.compile (Linux containers; ignored/unreliable on native Windows)
+docker compose run --rm train python -m src.main --config-path src/config.yaml --torch-compile
+
+# Inference only (does not retrain). Requires checkpoints under src/training_output/
+# (dpo_model/dpo_merged_model preferred, else final_merged_model).
+docker compose --profile infer run --rm infer
+docker compose --profile infer run --rm infer python -m src.main \
+  --config-path src/config.yaml --inference-only \
+  --example-queries "Calculate 2+2"
+```
+
+Compose bind-mounts `./src` into the container (Python, `config.yaml`, datasets, `training_output`). **You do not need to rebuild the image** after changing training code or YAML. Rebuild only for Dockerfile / `requirements.docker.txt` / flash-attn.
+
+Compose sets `shm_size: 16gb` so DataLoader workers do not fail on `/dev/shm`. Hugging Face downloads persist in the `hf-cache` named volume. Checkpoints persist in `src/training_output/`. Tool-agent file tools use `data/allowed/read` and `data/allowed/write`.
+
+Flash Attention 2 is **off** in the default image; `model_setup` falls back to SDPA if `flash_attn` is missing. To build FA2 into the image (needs the CUDA **devel** base):
+
+```bash
+docker compose build \
+  --build-arg INSTALL_FLASH_ATTN=true \
+  --build-arg BASE_IMAGE=nvidia/cuda:12.4.1-cudnn-devel-ubuntu22.04
+```
+
+Do not change `src/config.yaml` attention defaults unless you intend to. Linear-attention kernels stay disabled unless you install those packages yourself (`model.use_linear_attention_kernels`).
+
+A full SFT run is not a smoke test (hours / VRAM). After `gpu-check`, `docker compose run --rm train python -m src.main --help` is enough to confirm the CLI inside the image.
+
 ---
 
 ## Data Formats
@@ -474,15 +523,26 @@ Output directory structure:
 
 ```
 output/my-model/
-├── final_adapter/          # LoRA adapter weights
-├── final_merged_model/     # Merged model (base + adapter)
+├── README.md               # Run summary: datasets, hyperparameters, hardware,
+│                           # runtime/loss statistics, artifact pointers
+├── final_adapter/          # SFT LoRA adapter weights (no model card)
+├── final_merged_model/     # Merged SFT model (base + adapter)
+│   ├── README.md           # SFT-stage model card (HF template)
 │   ├── config.json
 │   ├── model.safetensors
 │   └── tokenizer files
-└── dpo_model/             # DPO-trained model
-    ├── adapter_config.json
-    └── adapter_model.safetensors
+└── dpo_model/              # All DPO artifacts
+    ├── README.md           # DPO-stage model card
+    ├── checkpoint-<step>/  # DPO adapter checkpoints, each with its own card
+    └── dpo_merged_model/   # Merged DPO model + DPO model card
+        └── README.md
 ```
+
+Every model directory carries a Hugging Face-standard model card (YAML
+frontmatter + template sections) generated via `huggingface_hub`'s
+`ModelCard` API; `final_adapter/` is intentionally card-free. The merged DPO
+model is produced from the latest checkpoint with
+`python -m src.helper_scripts.dpo_merge_base`.
 
 #### Step 5: Run Inference
 
@@ -491,8 +551,8 @@ output/my-model/
 ```python
 from src.inference_with_tools import load_model_pipeline, agent_loop
 
-# Load the best available model (prefers DPO model)
-model_pipeline = load_model_pipeline("./output/my-model/dpo_model")
+# Load the best available model (prefers the merged DPO model)
+model_pipeline = load_model_pipeline("./output/my-model/dpo_model/dpo_merged_model")
 
 # Run agent loop with tool execution
 response = agent_loop(
@@ -508,7 +568,7 @@ print(response)
 ```bash
 # Using the final_merged_model works too.
 python -m src.inference_with_tools \
-    --model_path ./output/my-model/dpo_model \  
+    --model_path ./output/my-model/dpo_model/dpo_merged_model \  
     --query "Your query here"
 ```
 

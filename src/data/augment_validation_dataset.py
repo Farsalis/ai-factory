@@ -319,7 +319,10 @@ def generate_tool_variant(
         logger.warning("Skipping variant generation: Empty messages or tools")
         return None
 
-    new_messages = original_messages.copy()
+    # Copy each message dict: a shallow list copy would alias the source dicts,
+    # so injecting content below would mutate the original example and every
+    # later variant would wrap the already-injected content.
+    new_messages = [dict(msg) for msg in original_messages]
     user_msg = next(
         (msg.get("content", "") for msg in new_messages if msg.get("role") == "user"),
         "",

@@ -19,7 +19,12 @@ pytest.importorskip("pydantic")
 
 from datasets import Dataset
 from peft import LoraConfig as PeftLoraConfig
-from transformers import PreTrainedModel, PreTrainedTokenizer, TrainingArguments
+from transformers import (
+    EarlyStoppingCallback,
+    PreTrainedModel,
+    PreTrainedTokenizer,
+    TrainingArguments,
+)
 
 import src.train as train
 from src.config import (
@@ -312,6 +317,55 @@ def test_prepare_training_arguments_optimizer_fallback(
     assert args_dict["optim"] == "adamw_torch"
 
 
+@pytest.mark.unit
+def test_apply_eval_strategy_fields_maps_aliases_and_disables_load_best() -> None:
+    """eval_strategy alias is set and load_best_model_at_end is off when eval is no."""
+    args_dict: dict[str, object] = {"load_best_model_at_end": True}
+    train._apply_eval_strategy_fields(
+        args_dict,
+        {"eval_strategy", "load_best_model_at_end"},
+        "no",
+    )
+    assert args_dict["eval_strategy"] == "no"
+    assert "evaluation_strategy" not in args_dict
+    assert args_dict["load_best_model_at_end"] is False
+
+
+@pytest.mark.unit
+def test_drop_early_stopping_if_eval_disabled() -> None:
+    """Injected EarlyStoppingCallback is stripped when eval is disabled."""
+    trainer = MagicMock()
+    keeper = object()
+    trainer.callback_handler.callbacks = [
+        EarlyStoppingCallback(early_stopping_patience=3),
+        keeper,
+    ]
+    train._drop_early_stopping_if_eval_disabled(trainer, "no")
+    assert trainer.callback_handler.callbacks == [keeper]
+
+
+@pytest.mark.unit
+def test_pre_tokenize_datasets_without_eval_dataset(
+    mock_tokenizer: PreTrainedTokenizer, mock_dataset: dict[str, Dataset]
+) -> None:
+    """Pre-tokenize still works when eval_dataset was omitted."""
+    trainer_kwargs = {
+        "train_dataset": mock_dataset["train"],
+        "dataset_text_field": "text",
+    }
+    mock_tokenizer.return_value = {"input_ids": [1, 2, 3], "attention_mask": [1, 1, 1]}
+    after_filter_train = MagicMock(spec=Dataset)
+    chain_train = MagicMock()
+    chain_train.filter.return_value = after_filter_train
+    mock_dataset["train"].map = MagicMock(return_value=chain_train)
+
+    result = train._pre_tokenize_datasets(trainer_kwargs, mock_tokenizer, 256)
+
+    assert result["train_dataset"] == after_filter_train
+    assert "eval_dataset" not in result
+    mock_dataset["validation"].map.assert_not_called()
+
+
 # ============================================================================
 # Tests for _pre_tokenize_datasets
 # ============================================================================
@@ -433,6 +487,77 @@ def test_prepare_trainer_kwargs_without_tokenizer_param(
 
     mock_pre_tokenize.assert_called_once()
     assert "tokenizer" not in result
+
+
+@pytest.mark.unit
+@patch("src.train.inspect.signature")
+def test_prepare_trainer_kwargs_includes_early_stopping_when_eval_enabled(
+    mock_signature: MagicMock,
+    mock_model: PreTrainedModel,
+    mock_tokenizer: PreTrainedTokenizer,
+    sample_config: ScriptConfig,
+    mock_dataset: dict[str, Dataset],
+) -> None:
+    """EarlyStoppingCallback is attached when evaluation_strategy is steps."""
+    mock_sig = MagicMock()
+    mock_sig.parameters.keys.return_value = [
+        "model",
+        "args",
+        "train_dataset",
+        "tokenizer",
+    ]
+    mock_signature.return_value = mock_sig
+
+    training_args = TrainingArguments(output_dir="/tmp", num_train_epochs=1)
+    lora_config = PeftLoraConfig(r=8, task_type="CAUSAL_LM")
+
+    result = train._prepare_trainer_kwargs(
+        mock_model,
+        training_args,
+        mock_dataset,
+        lora_config,
+        mock_tokenizer,
+        sample_config,
+    )
+
+    assert len(result["callbacks"]) == 1
+    assert isinstance(result["callbacks"][0], EarlyStoppingCallback)
+
+
+@pytest.mark.unit
+@patch("src.train.inspect.signature")
+def test_prepare_trainer_kwargs_skips_early_stopping_when_eval_disabled(
+    mock_signature: MagicMock,
+    mock_model: PreTrainedModel,
+    mock_tokenizer: PreTrainedTokenizer,
+    sample_config: ScriptConfig,
+    mock_dataset: dict[str, Dataset],
+) -> None:
+    """EarlyStoppingCallback is omitted when evaluation_strategy is no."""
+    mock_sig = MagicMock()
+    mock_sig.parameters.keys.return_value = [
+        "model",
+        "args",
+        "train_dataset",
+        "tokenizer",
+    ]
+    mock_signature.return_value = mock_sig
+    sample_config.training.evaluation_strategy = "no"
+
+    training_args = TrainingArguments(output_dir="/tmp", num_train_epochs=1)
+    lora_config = PeftLoraConfig(r=8, task_type="CAUSAL_LM")
+
+    result = train._prepare_trainer_kwargs(
+        mock_model,
+        training_args,
+        mock_dataset,
+        lora_config,
+        mock_tokenizer,
+        sample_config,
+    )
+
+    assert result["callbacks"] == []
+    assert "eval_dataset" not in result
 
 
 # ============================================================================
@@ -776,3 +901,83 @@ def test_run_pipeline_merge_failure(
 
     # Verify training was called
     mock_run_training.assert_called_once()
+
+
+# ============================================================================
+# Tests for model card generation during merge
+# ============================================================================
+
+
+@pytest.mark.unit
+@patch("src.train.AutoProcessor")
+@patch("src.train.load_tokenizer")
+@patch("src.train.resolve_model_class")
+@patch("src.train.PeftModel")
+def test_merge_writes_sft_model_card(
+    mock_peft_model: MagicMock,
+    mock_resolve_model_class: MagicMock,
+    mock_load_tokenizer: MagicMock,
+    mock_auto_processor: MagicMock,
+    sample_config: ScriptConfig,
+    mock_env_cuda: Environment,
+) -> None:
+    """merge_and_save_model writes an HF model card into final_merged_model."""
+    from src.model_cards import MODEL_CARD_FILENAME
+
+    sample_config.training.adapter_path.mkdir(parents=True, exist_ok=True)
+    mock_peft_instance = MagicMock()
+    mock_peft_instance.merge_and_unload.return_value = MagicMock()
+    mock_peft_model.from_pretrained.return_value = mock_peft_instance
+    mock_load_tokenizer.return_value = MagicMock()
+
+    stats = {
+        "metrics": {"train_loss": 1.5, "train_runtime": 60.0},
+        "log_history": [{"loss": 1.5, "step": 5}],
+    }
+    train.merge_and_save_model(sample_config, mock_env_cuda, stats=stats)
+
+    card_path = sample_config.training.merged_model_path / MODEL_CARD_FILENAME
+    card_text = card_path.read_text(encoding="utf-8")
+    assert card_text.startswith("---")
+    assert "base_model: test-model" in card_text
+    assert "library_name: transformers" in card_text
+    assert "sft" in card_text
+    assert "Final training loss | 1.5" in card_text
+    # The adapter directory stays card-free by design.
+    adapter_card = sample_config.training.adapter_path / MODEL_CARD_FILENAME
+    assert not adapter_card.exists()
+
+
+@pytest.mark.unit
+@patch("src.train.SFTTrainer")
+@patch("src.train._prepare_trainer_kwargs")
+@patch("src.train._prepare_training_arguments")
+@patch("src.train.load_and_prepare_dataset")
+def test_run_training_returns_stats(
+    mock_load_dataset: MagicMock,
+    mock_prepare_args: MagicMock,
+    mock_prepare_kwargs: MagicMock,
+    mock_sft_trainer: MagicMock,
+    sample_config: ScriptConfig,
+    mock_env_cuda: Environment,
+    mock_tokenizer: PreTrainedTokenizer,
+    mock_model: PreTrainedModel,
+    mock_dataset: dict[str, Dataset],
+) -> None:
+    """run_training surfaces trainer metrics and log history."""
+    mock_load_dataset.return_value = mock_dataset
+    mock_prepare_args.return_value = {"output_dir": "/tmp", "num_train_epochs": 1}
+    mock_prepare_kwargs.return_value = {"model": mock_model}
+
+    mock_trainer = MagicMock()
+    mock_trainer.train.return_value = MagicMock(metrics={"train_loss": 0.9})
+    mock_trainer.state.log_history = [{"loss": 0.9, "step": 3}]
+    mock_sft_trainer.return_value = mock_trainer
+
+    stats = train.run_training(sample_config, mock_env_cuda, mock_tokenizer, mock_model)
+
+    assert stats["metrics"] == {"train_loss": 0.9}
+    assert stats["log_history"] == [{"loss": 0.9, "step": 3}]
+    # Adapter saved to the configured adapter path
+    save_target = Path(mock_trainer.save_model.call_args.args[0])
+    assert save_target == sample_config.training.adapter_path

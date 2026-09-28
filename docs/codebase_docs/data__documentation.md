@@ -30,6 +30,8 @@ ai-factory/
 ├── src/
 │   ├── data/
 │   │   ├── __init__.py                    # <-- MAIN MODULE: Data loading, formatting, collation
+│   │   ├── build_icdu_dataset.py           # <-- VERSIONED BUILDER: v9+ splits, lineage, gates
+│   │   ├── draft_icdu_candidates.py         # Claude-drafted candidates for thin cells
 │   │   ├── master_generate_icdu.py        # Comprehensive ICDU generation pipeline
 │   │   ├── generate_icdu_dataset.py       # Chat-format to ICDU conversion
 │   │   ├── augment_dataset.py             # JSONL augmentation with tool-calling variants
@@ -43,6 +45,8 @@ ai-factory/
 │   └── utils.py                           # Environment utilities
 ├── tests/
 │   ├── test_data.py                       # Unit tests (tests/test_data.py)
+│   ├── test_build_icdu_dataset.py         # Builder + validation-gate tests
+│   ├── test_draft_icdu_candidates.py      # Drafter planning/screening/SDK boundary
 │   ├── test_data_scripts_smoke.py
 │   └── test_master_generate_icdu.py
 └── docs/
@@ -92,6 +96,41 @@ Chat "standard messages" is **not** an alternate SFT loader path in this package
 | `generate_icdu_publication_dataset.py` | Publication-quality dataset generation               | Higher quality, curated examples               |
 | `generate_icdu_proactive_dataset.py`   | Proactive response generation                        | Follow-up question integration                 |
 | `augment_validation_dataset.py`        | Validation dataset augmentation                      | Validation-specific augmentation               |
+| `draft_icdu_candidates.py`             | Claude-drafted staging candidates for thin cells     | `plan_new_families()`, `screen_candidates()`   |
+
+
+### Versioned Dataset Builder (build_icdu_dataset.py)
+
+Builds version N+1 from version N plus a file of reviewed candidate records.
+Unlike the generation scripts above, it is pure stdlib, deterministic, and
+gated: nothing is written unless every validation check passes. Use this for
+ICDU v9 and later; the older scripts produced the pre-v9 augmented corpora.
+
+| Function/Class            | Signature                                                                                   | Description                                                                 |
+| ------------------------- | ------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| `build_dataset`           | `(*, paths, staged_files, build_seed, validation_ratio=0.2, ...) -> BuildResult`             | Full build: carry forward, assign splits, validate, write artifacts         |
+| `build_icdu_record`       | `(*, prompt, response, persona, principle, capability, attributes=None, icdu_id=None)`      | Assembles all ten ICDU fields from the three chosen labels                   |
+| `canonical_family_hash`   | `(prompt: str) -> str`                                                                      | Prompt-family identity: SHA-256 of the case/whitespace-normalised prompt     |
+| `derived_fields_match`    | `(record: IcduRecord) -> list[str]`                                                         | Names of derived fields that no longer follow from the record's labels      |
+| `SplitLedger`             | `class` (`from_lineage`, `get`, `add`)                                                      | Append-only family → split authority read from the prior lineage file       |
+| `allocate_new_family_splits` | `(candidates, validation_ratio) -> dict[str, str]`                                       | Persona-stratified largest-remainder allocation over train/validation only  |
+| `detect_prompt_artifacts` | `(prompt: str, known_prompts: set[str]) -> list[str]`                                       | Flags v8 mechanical suffixes and prompts that extend an existing prompt     |
+| `content_sha256`          | `(path: Path) -> str`                                                                       | SHA-256 over LF-normalised bytes — the manifest hash convention             |
+
+**Key invariants** (see `tests/test_build_icdu_dataset.py`):
+
+*   Rebuilding v9 with no staged candidates reproduces the three published v9
+    JSONL files byte-for-byte.
+*   A prompt family keeps its split forever; the sealed test split is unchanged
+    unless `--allow-test-changes` is passed.
+*   A variant inherits its parent's split, so a scenario cannot leak across
+    splits.
+*   `user_intent`, `context_summary` and `ideal_response_cot` are derived from
+    persona/principle/capability, not authored.
+
+Output artifacts per version: three split JSONL files, `_source_lineage.jsonl`
+(the next build's ledger), `_validation_report.json` and `_manifest.json`.
+Staging input contract: `src/data/datasets/staging/README.md`.
 
 
 ## 4. Execution and Control Flow

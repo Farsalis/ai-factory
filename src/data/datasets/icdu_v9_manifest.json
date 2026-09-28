@@ -1,0 +1,37 @@
+{
+  "dataset_name": "ICDU General Dataset v9 — Clean Core",
+  "version": "9.0.1-clean-core",
+  "build_seed": "icdu-general-v9-clean-core-2026-09-01",
+  "repository": "https://github.com/Farsalis/ai-factory",
+  "dataset_build_source_commit": "f6da3da4d083e85eac833bbc0508d339f9373b1f",
+  "docker_dev_base_commit": "0cb4230b434f6c3693899b5449b38b78f638c2e0",
+  "record_counts": {
+    "train": 240,
+    "validation": 60,
+    "test": 54,
+    "total": 354
+  },
+  "split_policy": {
+    "train_validation_source": "breaking_better_training_data_v6.jsonl",
+    "test_source": "breaking_better_validation_data_v6.jsonl",
+    "validation_records": 60,
+    "stratification": "persona_archetype with deterministic largest-remainder allocation",
+    "augmentation_before_split": false
+  },
+  "source_file_sha256": {
+    "breaking_better_training_data_v6.jsonl": "37fecef954600f48268cee160354482dfae0f5609e4fc5658ad82bad9a54b6fc",
+    "breaking_better_validation_data_v6.jsonl": "0afb56f4c8a8ba4c96ee730e6aae5a4dc1f8a4ae137d6ea84c311684c9196b4e",
+    "icdu_training_data_v8.jsonl": "1b288abd185861a130b675ad079ee3f43f0067ee8fe1d1b9572e258915cf2c5e",
+    "icdu_validation_data_v8.jsonl": "60646eb39ab37bf0657791e910b4280da880ea6b9e1afd712b56e5d63dd9c1c3"
+  },
+  "v9_file_sha256": {
+    "icdu_training_data_v9.jsonl": "bad7919e1faf2e77f49b93129f3edb1bb8f9b18c9eacbe58f3396a7f8f8c6255",
+    "icdu_validation_data_v9.jsonl": "1dd84f2feb91d04d68ac8118fe9f7a4857b616e279d5174e0dc004014fa03493",
+    "icdu_test_data_v9.jsonl": "10fc27c6e8deb035fe3779019e65c1ffa7b72c50a4b7ec067254f4506e621ba9",
+    "icdu_v9_source_lineage.jsonl": "41b38c62f097e496efc5f43ecf8448fe2981f40fc3dbe175ad8a0ff372f6b448",
+    "icdu_v9_validation_report.json": "e884e592b20016a5cad050d729381cfd96f85aa140e06908e9d9f9c21fa6c774"
+  },
+  "text_policy": "source prompt and assistant response preserved verbatim",
+  "metadata_policy": "deterministic conservative heuristic labels",
+  "validation_status": "PASS"
+}

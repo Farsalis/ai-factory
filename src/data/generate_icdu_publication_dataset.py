@@ -64,6 +64,9 @@ DEFAULT_CHAPTER_WEIGHTS = {"Chapter 1": 1.0, "Chapter 2": 1.0, "Chapter 3": 1.0}
 # Default persona for unmatched queries
 DEFAULT_PERSONA = "General User > Problem Solver"
 
+# Perturbation template whose body is the inverted context rather than the base
+INVERTED_CONSTRAINT_LABEL = "Inverted constraint"
+
 # Capability layers
 CAPABILITY_LAYERS = ["Foundational", "Transformational", "Aspirational"]
 
@@ -573,6 +576,11 @@ def paraphrase_response(response: str) -> str:
 def generate_dynamic_perturbation(base: str, depth: int) -> str:
     """Generate dynamic perturbations via template combinations.
 
+    Each template contributes a label and a qualifier clause. The base context is
+    emitted exactly once, so combining templates at ``depth`` > 1 no longer
+    repeats it. At ``depth`` == 1 the output is identical to the single-template
+    wording used previously.
+
     Args:
         base: The base context string to perturb.
         depth: Number of perturbation templates to combine.
@@ -585,17 +593,23 @@ def generate_dynamic_perturbation(base: str, depth: int) -> str:
         .replace("tight", "generous")
         .replace("nervous", "excited")
     )
-    templates = [
-        f"Inverted constraint: {inverted}",
-        f"Multi-stakeholder: {base} involving team or family "
-        "consensus and diverse opinions.",
-        f"Ethical twist: {base} with moral considerations and fairness principles.",
-        f"High-stakes: {base} under pressure from deadlines or high expectations.",
-        f"Cultural variant: {base} adapted to regional or cultural nuances.",
-        f"Outcome-focused: {base} aiming for measurable success metrics.",
+    templates: list[tuple[str, str]] = [
+        (INVERTED_CONSTRAINT_LABEL, ""),
+        (
+            "Multi-stakeholder",
+            "involving team or family consensus and diverse opinions.",
+        ),
+        ("Ethical twist", "with moral considerations and fairness principles."),
+        ("High-stakes", "under pressure from deadlines or high expectations."),
+        ("Cultural variant", "adapted to regional or cultural nuances."),
+        ("Outcome-focused", "aiming for measurable success metrics."),
     ]
     selected = random.sample(templates, min(depth, len(templates)))
-    return " ".join(selected)
+
+    labels = [label for label, _ in selected]
+    body = inverted if INVERTED_CONSTRAINT_LABEL in labels else base
+    qualifiers = " ".join(qualifier for _, qualifier in selected if qualifier)
+    return f"{', '.join(labels)}: {body} {qualifiers}".strip()
 
 
 def get_augmentations(

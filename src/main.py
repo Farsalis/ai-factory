@@ -9,6 +9,7 @@ This module provides the main command-line interface for the complete training p
 
 Usage:
     python -m src.main --config-path config.yaml [--run-inference]
+    python -m src.main --config-path config.yaml --inference-only
     python -m src.main optimize-config --config-path config.yaml \\
         --preset fast --output config_optimized.yaml
 """
@@ -22,14 +23,14 @@ import sys
 from pathlib import Path
 from typing import Any, cast
 
-# Disable transformers' optional torchvision integration before importing torch
-# so CPU-only setups don't trip over the missing dependency.
-os.environ.setdefault("TRANSFORMERS_NO_TORCHVISION", "1")
-os.environ.setdefault("TRANSFORMERS_IMAGE_TRANSFORMS_DISABLED", "1")
-
 import yaml
 
 from src.config import ScriptConfig
+
+# Disable transformers' optional torchvision integration before any later
+# torch/transformers imports (including in run_pipeline / inference).
+os.environ.setdefault("TRANSFORMERS_NO_TORCHVISION", "1")
+os.environ.setdefault("TRANSFORMERS_IMAGE_TRANSFORMS_DISABLED", "1")
 
 # Configure logging before any pipeline work so CLI failures are always visible.
 logging.basicConfig(
@@ -139,7 +140,10 @@ def _resolve_config_paths(
 def _find_model_path(config: ScriptConfig) -> Path:
     """Find the best available model path for inference.
 
-    Prefers DPO-trained model over merged model if both exist.
+    Prefers the merged DPO model over the merged SFT model if both exist.
+    DPO checkpoints (LoRA adapters) are not loadable standalone, so the DPO
+    run directory itself is never returned; merge a checkpoint with
+    ``src.helper_scripts.dpo_merge_base`` to make DPO weights servable.
 
     Args:
         config: Script configuration.
@@ -150,19 +154,43 @@ def _find_model_path(config: ScriptConfig) -> Path:
     Raises:
         FileNotFoundError: If no model is found.
     """
-    dpo_path = config.training.output_dir / "dpo_model"
-    merged_path = config.training.output_dir / "final_merged_model"
+    dpo_merged_path = config.dpo_merged_model_path
+    merged_path = config.training.merged_model_path
 
-    # Prefer DPO model if available, otherwise use merged model
-    model_path = dpo_path if dpo_path.exists() else merged_path
+    # Prefer merged DPO model if available, otherwise use merged SFT model
+    model_path = dpo_merged_path if dpo_merged_path.exists() else merged_path
 
     if not model_path.exists():
-        available_paths = [dpo_path, merged_path]
+        available_paths = [dpo_merged_path, merged_path]
         raise FileNotFoundError(
             f"No model found. Checked paths: {[str(p) for p in available_paths]}"
         )
 
     return model_path
+
+
+def _collect_hardware_profile(env: Any) -> dict[str, Any]:
+    """Build a hardware description for the run summary.
+
+    Args:
+        env: Environment with at least a ``device_name`` attribute.
+
+    Returns:
+        Mapping of hardware component labels to values; degrades to the
+        device name alone when full profiling is unavailable.
+    """
+    hardware: dict[str, Any] = {"Device": getattr(env, "device_name", "unknown")}
+    try:
+        from src.hardware import HardwareProfile
+
+        profile = HardwareProfile()
+        hardware["GPU count"] = profile.gpu_count
+        hardware["VRAM (GB)"] = round(profile.vram_bytes / 1024**3, 1)
+        hardware["System RAM (GB)"] = round(profile.system_ram_bytes / 1024**3, 1)
+        hardware["OS"] = profile.os_name
+    except Exception as exc:
+        logger.debug("Hardware profiling unavailable: %s", exc)
+    return hardware
 
 
 def run_inference_phase(
@@ -243,6 +271,8 @@ def run_pipeline(
     Raises:
         RuntimeError: If any phase of the pipeline fails.
     """
+    import time
+
     import torch
 
     from src.config import get_default_dpo_config
@@ -252,12 +282,15 @@ def run_pipeline(
         prepare_dpo_dataset,
         run_dpo_training,
     )
+    from src.model_cards import DPOCardContext, write_pipeline_run_summary
     from src.model_setup import load_model, load_tokenizer
     from src.train import merge_and_save_model, run_training
     from src.utils import Environment
 
     logger.info("Starting training pipeline")
     logger.info("Output directory: %s", config.training.output_dir)
+
+    phase_runtimes: dict[str, float] = {}
 
     # Initialize environment and set random seed
     env = Environment()
@@ -270,10 +303,12 @@ def run_pipeline(
     logger.info("Training Phase: QLoRA Fine-tuning")
     logger.info("=" * SEPARATOR_LENGTH)
 
+    phase_start = time.monotonic()
     try:
         tokenizer = load_tokenizer(config.model)
         quantized_model = load_model(config.model, config.quantization, env)
-        run_training(config, env, tokenizer, quantized_model)
+        sft_stats = run_training(config, env, tokenizer, quantized_model)
+        phase_runtimes["sft"] = time.monotonic() - phase_start
         logger.info("Training phase completed successfully")
     except Exception as e:
         logger.error("Training phase failed: %s", e, exc_info=True)
@@ -291,8 +326,10 @@ def run_pipeline(
     logger.info("Merging Phase: LoRA Weights into Base Model")
     logger.info("=" * SEPARATOR_LENGTH)
 
+    phase_start = time.monotonic()
     try:
-        merge_and_save_model(config, env)
+        merge_and_save_model(config, env, stats=sft_stats)
+        phase_runtimes["merge"] = time.monotonic() - phase_start
         logger.info("Merging phase completed successfully")
     except Exception as e:
         logger.error("Merging phase failed: %s", e, exc_info=True)
@@ -303,6 +340,7 @@ def run_pipeline(
     logger.info("DPO Phase: Direct Preference Optimization")
     logger.info("=" * SEPARATOR_LENGTH)
 
+    phase_start = time.monotonic()
     try:
         if config.dpo is None:
             logger.warning(
@@ -337,26 +375,42 @@ def run_pipeline(
         pref_dataset = prepare_dpo_dataset(pref_data)
         logger.info("Prepared DPO dataset")
 
-        dpo_base_path = config.training.output_dir / "final_merged_model"
+        dpo_base_path = config.training.merged_model_path
         dpo_model_path = (
             str(dpo_base_path) if dpo_base_path.exists() else str(config.model.name)
         )
         logger.info("DPO base model: %s", dpo_model_path)
 
-        dpo_output_dir_raw: Path | str = (
-            dpo_config.output_dir
-            if dpo_config.output_dir is not None
-            else config.training.output_dir / "dpo_model"
-        )
-        dpo_output_dir_str: str = (
-            str(dpo_output_dir_raw)
-            if isinstance(dpo_output_dir_raw, Path)
-            else str(Path(dpo_output_dir_raw).resolve())
-        )
-
+        dpo_output_dir_str = str(config.dpo_output_dir)
         logger.info("DPO output directory: %s", dpo_output_dir_str)
 
-        run_dpo_training(
+        dpo_card_context = DPOCardContext(
+            base_model=config.model.name,
+            sft_model_path=dpo_model_path,
+            train_data=(
+                f"Preference pairs generated from `{Path(dpo_train_file).name}` "
+                f"({len(pref_data)} chosen/rejected pairs contrasting correct "
+                "and incorrect tool calls)."
+            ),
+            license_id=config.model.license,
+            hyperparameters={
+                "max_steps": dpo_config.max_steps,
+                "learning_rate": dpo_config.learning_rate,
+                "beta": dpo_config.beta,
+                "lora_rank": dpo_config.lora_rank,
+                "per_device_train_batch_size": (dpo_config.per_device_train_batch_size),
+                "gradient_accumulation_steps": (dpo_config.gradient_accumulation_steps),
+                "optimizer": dpo_config.optim,
+                "lr_scheduler_type": dpo_config.lr_scheduler_type,
+                "warmup_ratio": dpo_config.warmup_ratio,
+            },
+            hardware_type=env.device_name,
+            developers=config.model.developers,
+            card_authors=config.model.card_authors,
+            card_contacts=config.model.card_contacts,
+        )
+
+        dpo_stats = run_dpo_training(
             model_path=dpo_model_path,
             dataset=pref_dataset,
             output_dir=dpo_output_dir_str,
@@ -378,11 +432,27 @@ def run_pipeline(
             torch_compile=torch_compile,
             use_linear_attention_kernels=config.model.use_linear_attention_kernels,
             preserve_all_tensors=config.model.preserve_all_tensors,
+            card_context=dpo_card_context,
         )
+        phase_runtimes["dpo"] = time.monotonic() - phase_start
         logger.info("DPO phase completed successfully")
     except Exception as e:
         logger.error("DPO phase failed: %s", e, exc_info=True)
         raise RuntimeError(f"DPO training failed: {e}") from e
+
+    # Run summary (top-level README with datasets, hyperparameters, hardware,
+    # runtime, loss statistics, and artifact pointers). Written after all
+    # training phases so it replaces any interim trainer-written README.
+    try:
+        write_pipeline_run_summary(
+            config,
+            sft_stats=sft_stats,
+            dpo_stats=dpo_stats,
+            phase_runtimes=phase_runtimes,
+            hardware=_collect_hardware_profile(env),
+        )
+    except Exception as exc:
+        logger.warning("Failed to write run summary: %s", exc)
 
     # Inference Phase (optional)
     if run_inference:
@@ -407,7 +477,7 @@ def run_pipeline(
 
 
 def _build_pipeline_parser(prog: str) -> argparse.ArgumentParser:
-    """Build argparse parser for the default training pipeline."""
+    """Build argparse parser for the training pipeline and inference-only mode."""
     parser = argparse.ArgumentParser(
         prog=prog,
         description=(
@@ -421,10 +491,19 @@ def _build_pipeline_parser(prog: str) -> argparse.ArgumentParser:
         type=Path,
         help="Path to configuration YAML file.",
     )
-    parser.add_argument(
+    inference_mode = parser.add_mutually_exclusive_group()
+    inference_mode.add_argument(
         "--run-inference",
         action="store_true",
         help="Run inference after DPO training.",
+    )
+    inference_mode.add_argument(
+        "--inference-only",
+        action="store_true",
+        help=(
+            "Skip SFT, merge, and DPO; run inference against an existing "
+            "checkpoint (dpo_model/dpo_merged_model, else final_merged_model)."
+        ),
     )
     parser.add_argument(
         "--example-queries",
@@ -517,12 +596,16 @@ def _run_optimize_config(argv: list[str]) -> int:
 
 
 def _run_pipeline_cli(argv: list[str]) -> int:
-    """Execute the default training pipeline from CLI arguments."""
+    """Execute the training pipeline or inference-only mode from CLI arguments."""
     parser = _build_pipeline_parser(PROG_NAME)
     args = parser.parse_args(argv)
 
     try:
         config = load_config_from_yaml(args.config_path)
+        if args.inference_only:
+            queries = args.example_queries or DEFAULT_QUERIES
+            run_inference_phase(config, queries)
+            return 0
         use_torch_compile = args.torch_compile or (
             config.dpo.torch_compile if config.dpo else False
         )

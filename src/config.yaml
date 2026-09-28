@@ -1,30 +1,44 @@
 # ==============================================================================
 # Enhanced QLoRA and DPO Fine-Tuning Configuration
-# - Optimized for RTX 4070 (8GB VRAM, 32GB RAM) to prevent crashes.
-# - Supports ICDU-formatted datasets for the '3-3-3 Strategy' pipeline.
+# Tuned for a desktop RTX 4070 (12GB VRAM) + ~128GB host RAM, typically via
+# Docker Desktop (Linux CUDA container). Prioritizes finishing a run over
+# mid-train eval / full multimodal merge. Do not raise batch size until 2048
+# seq length completes without CUDA OOM (previous 4096/batch-4 run sat at ~96% VRAM).
 # ==============================================================================
 
 # --- Data Configuration ---
 # Point to ICDU-formatted JSONL files for training and validation.
 # Format: JSON Lines (.jsonl), with each line containing ICDU fields (e.g., application_prompt, ideal_response_final).
 data:
-  train_file: "./data/datasets/icdu_training_data_v8.jsonl"
-  validation_file: "./data/datasets/icdu_validation_data_v8.jsonl"
+  # v9 clean core: source-preserved examples with disjoint prompt-family splits.
+  # The sealed test set is intentionally not loaded during training.
+  train_file: "./data/datasets/icdu_training_data_v9.jsonl"
+  validation_file: "./data/datasets/icdu_validation_data_v9.jsonl"
 
 # --- Model Configuration ---
 # Defines the base model and its core parameters.
 model:
   name: "Qwen/Qwen3.5-9B"  # dpo.py uses this to resolve model location, either HF identifier or relative path to dpo.py
-  # Increased max_length to handle verbose ICDU system prompts and contexts.
-  max_length: 4096
-  attn_implementation: "flash_attention_2"
+  # 2048 is ~4x cheaper attention than 4096; ICDU prompts still fit for a first finishable run.
+  max_length: 2048
+  # Default Docker image has no flash_attn (falls back to SDPA anyway). Set
+  # flash_attention_2 after a successful INSTALL_FLASH_ATTN image rebuild.
+  attn_implementation: "sdpa"
   trust_remote_code: true
   use_linear_attention_kernels: false
-  # Load the checkpoint's declared architecture (e.g. Qwen3_5ForConditionalGeneration)
-  # rather than AutoModelForCausalLM, which silently drops the vision tower of a
-  # multimodal checkpoint and would omit it from the merged model. Set false only to
-  # deliberately export a text-only model.
-  preserve_all_tensors: true
+  # Text-only load (AutoModelForCausalLM). Faster and less VRAM than keeping the
+  # vision tower. Set true only if the merged checkpoint must stay multimodal.
+  preserve_all_tensors: false
+  # License of the fine-tuned weights for generated model cards (Qwen3.5 base
+  # weights are Apache-2.0). Remove to omit the license from card frontmatter.
+  license: "apache-2.0"
+  # Attribution rendered into every generated model card. Unset fields are left
+  # as "[More Information Needed]" by the Hugging Face template.
+  developers: "[developers]"
+  card_authors: "[card_authors]"
+  card_contacts:
+    - "[dev1]"
+    - "[dev2]"
 
 # --- Quantization Configuration ---
 # Settings for 4-bit QLoRA to minimize memory usage.
@@ -53,7 +67,10 @@ lora:
 training:
   output_dir: "./training_output"
   seed: 42
-  num_train_epochs: 1
+  # 240 rows at effective batch 8 is ~30 optimizer steps per epoch; three
+  # epochs (~90 steps) is a minimal QLoRA budget. Early stopping (patience 3
+  # evals) halts sooner if validation loss climbs.
+  num_train_epochs: 3
   per_device_train_batch_size: 4
   per_device_eval_batch_size: 4
   gradient_accumulation_steps: 2
@@ -63,12 +80,17 @@ training:
   max_grad_norm: 0.3
   warmup_ratio: 0.03
   lr_scheduler_type: "cosine"
+  # Mid-train eval over 1.5k val rows at long context dominated wall-clock time.
+  # Evaluate on the 60-row v9 validation split every 10 steps so checkpoint
+  # selection and overfitting detection actually happen. save_* must mirror
+  # eval_* for load_best_model_at_end, and save_steps must be a multiple of
+  # eval_steps. Set evaluation_strategy back to "no" only for a smoke run.
   evaluation_strategy: "steps"
-  eval_steps: 150
+  eval_steps: 10
   save_strategy: "steps"
-  save_steps: 300
-  save_total_limit: 2
-  save_only_model: false
+  save_steps: 10
+  save_total_limit: 2  # best + latest
+  save_only_model: true
   logging_steps: 10
   group_by_length: true
   gradient_checkpointing: true
@@ -77,7 +99,8 @@ training:
   metric_for_best_model: "eval_loss"
   greater_is_better: false
   remove_unused_columns: true
-  dataloader_num_workers: 2
+  # Linux container + high host/WSL RAM (optimizer would pick 4, not Windows 2).
+  dataloader_num_workers: 4
 
 # --- DPO Configuration ---
 # Parameters for Direct Preference Optimization (DPO) training.
@@ -85,7 +108,9 @@ training:
 # uses ICDU data (data.train_file) so DPO can use a separate augmented chat file.
 dpo:
   train_file: "./data/datasets/augmented_datasets/breaking_better/bb_training_data_v7.jsonl"  # optional; fallback: data.train_file
-  output_dir: "./training_output"
+  # Keep DPO artifacts (checkpoints + dpo_merged_model) in their own directory
+  # so they never mix with SFT artifacts at the training output root.
+  output_dir: "./training_output/dpo_model"
   learning_rate: 0.000005
   beta: 0.1
   max_steps: 100
@@ -95,12 +120,10 @@ dpo:
   gradient_accumulation_steps: 2
   optim: "paged_adamw_8bit"
   lr_scheduler_type: "cosine"
-  eval_steps: 50
-  save_steps: 50
-  save_total_limit: 2
+  eval_steps: 100
+  save_steps: 100
+  save_total_limit: 1
   logging_steps: 10
   gradient_checkpointing: true
   warmup_ratio: 0.03
-  torch_compile: false  # Requires Triton (Linux-only); set true on Linux for ~10-30% speedup
-
-# torch_compile: Triton not available on Windows; enable on Linux for faster DPO training.
+  torch_compile: true  # Triton is available in the Linux CUDA container

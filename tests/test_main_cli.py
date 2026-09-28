@@ -31,6 +31,7 @@ def test_cli_help_flag_prints_help(capsys: pytest.CaptureFixture[str]) -> None:
     captured = capsys.readouterr()
     assert code == 0
     assert "--config-path" in captured.out
+    assert "--inference-only" in captured.out
 
 
 @pytest.mark.unit
@@ -54,6 +55,55 @@ def test_cli_pipeline_dispatches_run_pipeline(monkeypatch: pytest.MonkeyPatch) -
     assert code == 0
     mock_load.assert_called_once()
     mock_run.assert_called_once()
+
+
+@pytest.mark.unit
+def test_cli_inference_only_skips_pipeline(monkeypatch: pytest.MonkeyPatch) -> None:
+    """--inference-only loads config and runs inference without SFT/DPO."""
+    mock_run = MagicMock()
+    mock_infer = MagicMock()
+    mock_load = MagicMock(return_value=MagicMock(dpo=None))
+    monkeypatch.setattr("src.main.run_pipeline", mock_run)
+    monkeypatch.setattr("src.main.run_inference_phase", mock_infer)
+    monkeypatch.setattr("src.main.load_config_from_yaml", mock_load)
+
+    code = cli(
+        [
+            "--config-path",
+            str(TEST_CONFIG_YAML),
+            "--inference-only",
+            "--example-queries",
+            "Calculate 2+2",
+        ]
+    )
+
+    assert code == 0
+    mock_load.assert_called_once()
+    mock_infer.assert_called_once()
+    mock_run.assert_not_called()
+    _, kwargs = mock_infer.call_args
+    assert kwargs == {}
+    positional = mock_infer.call_args[0]
+    assert positional[1] == ["Calculate 2+2"]
+
+
+@pytest.mark.unit
+def test_cli_inference_only_and_run_inference_are_exclusive(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """--inference-only and --run-inference cannot be combined."""
+    with pytest.raises(SystemExit) as exc_info:
+        cli(
+            [
+                "--config-path",
+                str(TEST_CONFIG_YAML),
+                "--inference-only",
+                "--run-inference",
+            ]
+        )
+    assert exc_info.value.code != 0
+    captured = capsys.readouterr()
+    assert "not allowed with" in captured.err or "not allowed with" in captured.out
 
 
 @pytest.mark.unit
